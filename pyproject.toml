@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frameproof"
+version = "0.1.0"
+description = "Агент смотрит видео без слепых зон и доказывает тайм-кодом, что именно он видел"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Edvard Grishin" }]
+keywords = ["video", "claude-code", "agent", "transcript", "keyframes", "ffmpeg", "whisper"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Video",
+]
+
+# numpy — единственная обязательная зависимость: сигнал изменения считается по
+# сырым кадрам, в чистом Python это десятки миллионов операций и минуты ожидания.
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+# yt-dlp нужен только для ссылок. Локальные файлы работают без него.
+net = ["yt-dlp>=2024.1.1"]
+# Быстрая локальная расшифровка на Apple Silicon.
+mlx = ["mlx-whisper>=0.4"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+frameproof = "frameproof.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/edvardgrishin27/frameproof"
+Issues = "https://github.com/edvardgrishin27/frameproof/issues"
+
+[tool.setuptools]
+packages = ["frameproof"]
+
+[tool.setuptools.package-data]
+frameproof = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
