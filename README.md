@@ -70,6 +70,43 @@ frameproof frames --at 18:38 --out ~/.frameproof/hermes
 # [18:38 / f0097] .../frames/f0097.jpg  (1196 токенов)
 ```
 
+## A citation you can check
+
+`[18:38 / f0097]` is not decoration. It points at a row of the index, and arithmetic checks it:
+
+```bash
+frameproof verify answer.md --out ~/.frameproof/hermes
+```
+
+```
+✗ [20:00 / f9999] The memory architecture diagram is on screen.
+      FAIL  FRAME_NOT_FOUND: no frame f9999 in the index — the reference is invented
+✗ [5:00 / f0097] Here he opens the router settings.
+      FAIL  TIME_MISMATCH: the tag says 5:00, frame f0097 was taken at 18:38
+?  [29:31 / f0160] A list of ten skills is shown.
+      WARN  NEVER_OPENED: the frame exists but was never requested —
+            the claim was made without looking
+```
+
+Six checks, zero model calls: does the frame exist · does the timestamp match · does the
+moment fall in a coverage gap · **was the frame ever served to the agent** · does the quoted
+string appear in the frame's OCR · does it appear in nearby speech.
+
+## A blind second look
+
+Meaning is beyond arithmetic. For that there is a separate subagent that sees **only the
+frame and the claim** — not the user's question, not the author's reasoning, not the rest
+of the answer. Its job is to refute.
+
+```bash
+frameproof verify answer.md --out <index> --plan   # tasks carrying no context at all
+```
+
+It runs **only when explicitly asked**. Refuted claims are **flagged, not hidden**: measured
+adversarial panels raise false alarms on up to a third of correct claims, so the call stays
+with the human.
+
+
 ## Install
 
 ```bash

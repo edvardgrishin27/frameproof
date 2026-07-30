@@ -204,6 +204,7 @@ def cmd_frames(args: argparse.Namespace) -> int:
         print("кадров не нашлось")
         return 1
 
+    _log_served(out_dir, rows)
     cov = idx["coverage"]
     for r in rows:
         inside = [g for g in cov["gaps"] if g["from"] <= r["t"] <= g["to"]]
@@ -217,6 +218,67 @@ def cmd_frames(args: argparse.Namespace) -> int:
     print(f"{len(rows)} кадров, примерно {total} визуальных токенов.")
     print("Показывай их модели и цитируй меткой [MM:SS / fNNNN].")
     return 0
+
+
+def _log_served(out_dir: str, rows: list[dict]) -> None:
+    """Журнал выданных кадров.
+
+    Нужен ровно для одной проверки: утверждение о кадре, который агенту ни разу не
+    выдавали, — это утверждение, сделанное не глядя. Поймать это можно только зная,
+    что именно инструмент отдал.
+    """
+    import time
+
+    try:
+        with open(os.path.join(out_dir, "served.jsonl"), "a", encoding="utf-8") as fh:
+            for r in rows:
+                fh.write(json.dumps(
+                    {"id": r["id"], "t": r["t"], "at": round(time.time(), 3)},
+                    ensure_ascii=False,
+                ) + "\n")
+    except OSError:
+        pass          # журнал — вспомогательный; его отсутствие не должно ломать выдачу
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    from .verify import audit, plan_second_look, render
+
+    out_dir = args.out
+    if not os.path.exists(os.path.join(out_dir, "index.json")):
+        print(f"нет индекса в {out_dir}", file=sys.stderr)
+        return 2
+    if not os.path.exists(args.answer):
+        print(f"нет файла с разбором: {args.answer}", file=sys.stderr)
+        return 2
+    with open(args.answer, encoding="utf-8") as fh:
+        answer = fh.read()
+
+    claims = audit(answer, out_dir)
+
+    if args.plan:
+        tasks = plan_second_look(claims, out_dir, limit=args.limit)
+        print(json.dumps(tasks, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.json:
+        print(json.dumps(
+            [
+                {
+                    "n": c.n, "text": c.text, "t": c.t, "frame_id": c.frame_id,
+                    "severity": c.severity, "needs_second_look": c.needs_second_look,
+                    "findings": [
+                        {"code": f.code, "severity": f.severity, "detail": f.detail}
+                        for f in c.findings
+                    ],
+                }
+                for c in claims
+            ],
+            ensure_ascii=False, indent=2,
+        ))
+        return 0
+
+    print(render(claims, index_dir=out_dir))
+    return 1 if any(c.severity == "FAIL" for c in claims) else 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -296,6 +358,28 @@ def cmd_install(args: argparse.Namespace) -> int:
             sh.rmtree(dst)
     os.symlink(src, dst)
     print(f"✓ скилл поставлен: {dst} → {src}")
+
+    # Субагент-проверяющий. Claude Code ищет субагентов только в ~/.claude/agents/,
+    # рядом со скиллом он их не видит.
+    agent_src = os.path.abspath(os.path.join(os.path.dirname(src), "agents",
+                                             "frameproof-adversary.md"))
+    if os.path.exists(agent_src):
+        agents_dir = os.path.expanduser("~/.claude/agents")
+        fresh = not os.path.isdir(agents_dir)
+        os.makedirs(agents_dir, exist_ok=True)
+        agent_dst = os.path.join(agents_dir, "frameproof-adversary.md")
+        if os.path.islink(agent_dst) or os.path.exists(agent_dst):
+            if args.force:
+                os.remove(agent_dst)
+            else:
+                print(f"  · {agent_dst} уже есть, пропускаю (--force чтобы перезаписать)")
+                agent_dst = ""
+        if agent_dst:
+            os.symlink(agent_src, agent_dst)
+            print(f"✓ проверяющий поставлен: {agent_dst}")
+            if fresh:
+                print("  ⚠ каталог ~/.claude/agents создан впервые — нужен рестарт Claude Code")
+
     print("  В Claude Code: «посмотри это видео <ссылка>» или /frameproof")
     return 0
 
@@ -338,6 +422,16 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("report", help="показать покрытие готового индекса")
     r.add_argument("--out", required=True)
     r.set_defaults(func=cmd_report)
+
+    v = sub.add_parser("verify", help="проверить утверждения разбора против индекса")
+    v.add_argument("answer", help="файл с разбором, который написал агент")
+    v.add_argument("--out", required=True, help="папка индекса")
+    v.add_argument("--json", action="store_true", help="машиночитаемый вывод")
+    v.add_argument("--plan", action="store_true",
+                   help="выдать задания для слепого проверяющего вместо отчёта")
+    v.add_argument("--limit", type=int, default=8,
+                   help="потолок утверждений для второго взгляда (по умолчанию 8)")
+    v.set_defaults(func=cmd_verify)
 
     d = sub.add_parser("doctor", help="проверить окружение")
     d.set_defaults(func=cmd_doctor)
