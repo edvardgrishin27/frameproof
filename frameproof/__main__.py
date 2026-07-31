@@ -337,12 +337,25 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def _link_or_copy(src: str, dst: str) -> None:
+    """Симлинк, а где нельзя — копия. На Windows симлинки требуют режима разработчика."""
+    import shutil
+
+    try:
+        os.symlink(src, dst)
+    except (OSError, NotImplementedError):
+        if os.path.isdir(src):
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     """Ставит скилл для Claude Code симлинком на канонический каталог."""
-    src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skill")
-    src = os.path.abspath(src)
+    pkg = os.path.dirname(os.path.abspath(__file__))
+    src = os.path.join(pkg, "assets", "skill")
     if not os.path.exists(os.path.join(src, "SKILL.md")):
-        print(f"не нашёл skill/SKILL.md рядом с пакетом ({src})", file=sys.stderr)
+        print(f"не нашёл SKILL.md в дистрибутиве ({src})", file=sys.stderr)
         return 2
     dst_dir = os.path.expanduser("~/.claude/skills")
     os.makedirs(dst_dir, exist_ok=True)
@@ -356,13 +369,12 @@ def cmd_install(args: argparse.Namespace) -> int:
         else:
             import shutil as sh
             sh.rmtree(dst)
-    os.symlink(src, dst)
+    _link_or_copy(src, dst)
     print(f"✓ скилл поставлен: {dst} → {src}")
 
     # Субагент-проверяющий. Claude Code ищет субагентов только в ~/.claude/agents/,
     # рядом со скиллом он их не видит.
-    agent_src = os.path.abspath(os.path.join(os.path.dirname(src), "agents",
-                                             "frameproof-adversary.md"))
+    agent_src = os.path.join(pkg, "assets", "agents", "frameproof-adversary.md")
     if os.path.exists(agent_src):
         agents_dir = os.path.expanduser("~/.claude/agents")
         fresh = not os.path.isdir(agents_dir)
@@ -375,7 +387,7 @@ def cmd_install(args: argparse.Namespace) -> int:
                 print(f"  · {agent_dst} уже есть, пропускаю (--force чтобы перезаписать)")
                 agent_dst = ""
         if agent_dst:
-            os.symlink(agent_src, agent_dst)
+            _link_or_copy(agent_src, agent_dst)
             print(f"✓ проверяющий поставлен: {agent_dst}")
             if fresh:
                 print("  ⚠ каталог ~/.claude/agents создан впервые — нужен рестарт Claude Code")

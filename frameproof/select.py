@@ -45,10 +45,25 @@ MAX_GAP = 15.0
 MIN_GAP = 0.75
 
 #: Доля изменившихся пикселей между двумя кандидатами, ниже которой это один и тот же экран.
-#: Сравниваем настоящие миниатюры той же метрикой, что и сигнал. Перцептивный хэш 8x8
-#: здесь не работает в принципе: на такой сетке терминал с новой строкой неотличим
-#: от терминала без неё, и дедуп выкашивает ровно те переходы, ради которых всё затевалось.
-SAME_SCREEN = 0.01
+#: Считается по миниатюре БЕЗ вечно шумящих областей (см. Signal.noisy_mask), поэтому
+#: порог низкий: 0.001 против прежних 0.01. Замер на живом ролике — со старым порогом
+#: 29.7 % настоящих переходов признавались дублями, а 15.4 % одинаковых экранов —
+#: разными; после маски и нового порога это 9.4 % и 0.8 %.
+#: Перцептивный хэш 8x8 здесь не работает в принципе: на такой сетке терминал с новой
+#: строкой неотличим от терминала без неё.
+SAME_SCREEN = 0.001
+
+#: Всплеск длиннее этого — уже не «набор команды в терминале», а другой класс контента:
+#: быстрый монтаж, прокрутка, проигрывание видео внутри видео. Такой режем изнутри.
+BURST_SPLIT = 2.5
+
+#: Сколько накопленного изменения внутри длинного всплеска стоит одного кадра.
+#: Замерено: на живом ролике интро 0-158 с не давало НИ ОДНОЙ паузы ниже порога,
+#: превращалось в один всплеск и отдавало один кадр — теряя десятки разных экранов.
+NOVELTY_BUDGET = 5.0
+
+#: Ролик короче этого считается коротким: абсолютная гарантия покрытия на нём вырождается.
+SHORT_VIDEO = 180.0
 
 #: Потолок кадров по умолчанию.
 MAX_FRAMES = 220
@@ -135,6 +150,37 @@ def _bursts(sig: Signal, threshold: float, quiet: float, merge_gap: float) -> li
     return out
 
 
+def _split_burst(sig: Signal, start: int, settle: int, budget: float, min_gap: float) -> list[int]:
+    """Режет длинный всплеск изнутри по НАКОПЛЕННОЙ новизне.
+
+    Короткий всплеск — это набор команды: экран меняется, пока человек печатает, и
+    нужен один кадр в конце, когда строка дописана. Всплеск длиной в минуты — совсем
+    другое: быстрый монтаж или прокрутка, где каждую секунду свой экран.
+
+    Отличить их порогом активности нельзя — сигнал в обоих случаях высокий. Отличает
+    длительность. Поэтому длинный всплеск идём насквозь, копим `change` и ставим кадр
+    каждый раз, когда накопилось на целый новый экран.
+    """
+    if sig.times[settle] - sig.times[start] <= BURST_SPLIT:
+        return [settle]
+
+    picked: list[int] = []
+    acc = 0.0
+    last_t = -1e9
+    for i in range(start, settle + 1):
+        acc += float(sig.change[i])
+        if acc >= budget and sig.times[i] - last_t >= min_gap:
+            picked.append(i)
+            last_t = float(sig.times[i])
+            acc = 0.0
+    if not picked or picked[-1] != settle:
+        if settle - (picked[-1] if picked else start) >= 0 and (
+            not picked or sig.times[settle] - sig.times[picked[-1]] >= min_gap
+        ):
+            picked.append(settle)
+    return picked or [settle]
+
+
 def _dedup(picks: list[Pick], sig: Signal, same_screen: float) -> tuple[list[Pick], int]:
     """Схлопывает соседние кадры с одинаковым экраном, оставляя последний.
 
@@ -209,6 +255,11 @@ def _thin(picks: list[Pick], cap: int, duration: float, max_gap: float) -> tuple
     while len(kept) > cap:
         best_i, best_cost = None, float("inf")
         for i in range(len(kept)):
+            # Якорь начала не трогаем. Для нулевого индекса разрыв слева считается
+            # от 0.0, поэтому его удаление выглядит бесплатным — и прореживание
+            # первым делом выкидывало ровно тот кадр, который мы только что поставили.
+            if i == 0 and kept[i].t <= 1e-6:
+                continue
             left = kept[i - 1].t if i > 0 else 0.0
             right = kept[i + 1].t if i + 1 < len(kept) else duration
             new_gap = right - left
@@ -244,12 +295,25 @@ def select_frames(
     same_screen: float = SAME_SCREEN,
     cap: int = MAX_FRAMES,
 ) -> Selection:
+    # Гарантия в 15 секунд на 14-секундном ролике бессмысленна: один кадр, и отчёт
+    # гордо пишет «покрытие 100 %». На коротком видео шаг должен быть от длительности.
+    if duration < SHORT_VIDEO:
+        max_gap = min(max_gap, max(1.0, duration / 12.0))
+
     # 1. Детект
-    picks = [
-        Pick(t=float(sig.times[settle]), reason="change", change=float(sig.change[start : settle + 1].max()))
-        for start, settle in _bursts(sig, threshold, quiet, merge_gap)
-    ]
+    picks: list[Pick] = []
+    for start, settle in _bursts(sig, threshold, quiet, merge_gap):
+        strength = float(sig.change[start : settle + 1].max())
+        for i in _split_burst(sig, start, settle, NOVELTY_BUDGET, min_gap):
+            picks.append(Pick(t=float(sig.times[i]), reason="change", change=strength))
+    picks.sort(key=lambda p: p.t)
     picks = _enforce_min_gap(picks, min_gap)
+
+    # Первый кадр существует всегда. _fill_gaps делит промежуток до первого пика
+    # поровну и никогда не ставит точку в нуле — начало ролика с движением
+    # (то есть любое интро) не показывалось вообще.
+    if not picks or picks[0].t > min_gap:
+        picks.insert(0, Pick(t=0.0, reason="grid", change=0.0))
 
     # 3. Дедуп — ДО страховки, чтобы не съесть кадры покрытия
     picks, dropped_dup = _dedup(picks, sig, same_screen)

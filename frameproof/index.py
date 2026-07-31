@@ -152,6 +152,13 @@ def write(
     with open(os.path.join(out_dir, "index.json"), "w", encoding="utf-8") as fh:
         json.dump(index, fh, ensure_ascii=False, indent=2)
 
+    # Журнал выдачи относится к ПРЕЖНЕМУ набору кадров. После переиндексации
+    # идентификаторы означают другие моменты, и проверка «кадр не запрашивался»
+    # начала бы врать в безопасную сторону — молча признавая всё чистым.
+    served = os.path.join(out_dir, "served.jsonl")
+    if os.path.exists(served):
+        os.remove(served)
+
     build_search(out_dir)
     return index
 
@@ -188,17 +195,59 @@ def build_search(out_dir: str) -> str:
     return db_path
 
 
+#: Токенайзер trigram физически не умеет искать короче трёх символов.
+TRIGRAM_MIN = 3
+
+
+def _search_plain(out_dir: str, query: str, limit: int) -> list[Hit]:
+    """Прямой проход по строкам — для запросов, которые триграммам не по зубам.
+
+    Без этого `search "AI"` или `search "v2"` молча возвращали «не найдено»:
+    FTS5 с токенайзером trigram на запросе короче трёх символов не находит ничего
+    и об этом не сообщает. Для канала про ИИ запрос «AI» — не экзотика.
+    """
+    needle = query.lower().replace("ё", "е")
+    hits: list[Hit] = []
+    for name, kind, ref_key, text_key in (
+        ("segments.jsonl", "speech", "i", "text"),
+        ("frames.jsonl", "screen", "id", "ocr"),
+    ):
+        path = os.path.join(out_dir, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                row = json.loads(line)
+                body = row.get(text_key) or ""
+                if needle not in body.lower().replace("ё", "е"):
+                    continue
+                ref = f"seg#{row['i']}" if kind == "speech" else row["id"]
+                hits.append(Hit(kind=kind, t=float(row.get("t0", row.get("t", 0.0))),
+                                text=body, ref=ref))
+                if len(hits) >= limit:
+                    return sorted(hits, key=lambda h: h.t)
+    return sorted(hits, key=lambda h: h.t)
+
+
 def search(out_dir: str, query: str, *, limit: int = 20) -> list[Hit]:
+    query = query.strip()
+    if len(query) < TRIGRAM_MIN:
+        return _search_plain(out_dir, query, limit)
+
     db_path = os.path.join(out_dir, "search.sqlite3")
     if not os.path.exists(db_path):
         build_search(out_dir)
     con = sqlite3.connect(db_path)
     try:
+        # Кавычка внутри запроса рвала строку FTS5 и роняла команду.
+        safe = query.replace('"', '""')
         cur = con.execute(
             "SELECT kind, t, ref, body FROM fts WHERE fts MATCH ? ORDER BY t LIMIT ?",
-            (f'"{query}"', limit),
+            (f'"{safe}"', limit),
         )
         return [Hit(kind=k, t=float(t), text=b, ref=r) for k, t, r, b in cur.fetchall()]
+    except sqlite3.OperationalError:
+        return _search_plain(out_dir, query, limit)
     finally:
         con.close()
 

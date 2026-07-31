@@ -45,6 +45,10 @@ GRID = 3
 #: считаться событием. Вечно шевелящаяся область глушится, редко меняющаяся — нет.
 BASELINE_K = 3.0
 
+#: Фон ячейки, выше которого она считается вечно шевелящейся и исключается из
+#: сравнения кадров между собой (камера ведущего, бегущий таймер, анимация).
+NOISY_CELL = 0.005
+
 
 #: Размер миниатюры, по которой сравниваются кадры-кандидаты между собой.
 #: Перцептивный хэш 8x8 здесь не годится в принципе: на такой сетке терминал с новой
@@ -99,11 +103,38 @@ class Signal:
         excess = self.cells - floor[None, :, :]
         return excess.reshape(len(self.times), -1).max(axis=1).clip(0.0, 1.0)
 
+    @cached_property
+    def noisy_mask(self) -> np.ndarray:
+        """Маска миниатюры: True там, где ячейка шевелится постоянно.
+
+        Замер на живом ролике: медианное различие миниатюр на НАСТОЯЩЕМ переходе —
+        0.0072, а вклад одной только камеры ведущего в углу — 0.0070. То есть шум
+        камеры численно равен полезному сигналу, и дедуп работал по случайности:
+        он не выкашивал контент лишь потому, что камера мешала ему это делать.
+
+        Вырезаем шумящие ячейки из сравнения — и тогда порог можно опустить туда,
+        где он действительно различает экраны.
+        """
+        mask = np.zeros((THUMB_H, THUMB_W), dtype=bool)
+        rows = [(THUMB_H * r // GRID, THUMB_H * (r + 1) // GRID) for r in range(GRID)]
+        cols = [(THUMB_W * c // GRID, THUMB_W * (c + 1) // GRID) for c in range(GRID)]
+        for r in range(GRID):
+            for c in range(GRID):
+                if self.baseline[r, c] > NOISY_CELL:
+                    r0, r1 = rows[r]
+                    c0, c1 = cols[c]
+                    mask[r0:r1, c0:c1] = True
+        return mask
+
     def thumb_diff(self, i: int, j: int) -> float:
-        """Доля изменившихся пикселей между двумя кадрами — та же метрика, что и в сигнале."""
+        """Доля изменившихся пикселей между двумя кадрами, без вечно шумящих областей."""
         a = self.thumbs[i].astype(np.int16)
         b = self.thumbs[j].astype(np.int16)
-        return float((np.abs(a - b) > PIXEL_DELTA).mean())
+        diff = np.abs(a - b) > PIXEL_DELTA
+        keep = ~self.noisy_mask
+        if not keep.any():
+            return float(diff.mean())     # весь кадр шумит — сравнивать целиком
+        return float(diff[keep].mean())
 
     def index_at(self, t: float) -> int:
         return int(np.argmin(np.abs(self.times - t)))

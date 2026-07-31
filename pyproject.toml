@@ -41,7 +41,9 @@ Issues = "https://github.com/edvardgrishin27/frameproof/issues"
 packages = ["frameproof"]
 
 [tool.setuptools.package-data]
-frameproof = ["py.typed"]
+# Скилл и субагент обязаны попадать в дистрибутив: без них `frameproof install`
+# после `pip install` не находит файлы и весь сценарий из README не работает.
+frameproof = ["py.typed", "assets/skill/*.md", "assets/agents/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
