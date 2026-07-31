@@ -27,7 +27,9 @@ jobs:
           python-version: "3.13"
       - name: Run tests before publishing
         run: |
-          pip install pytest
+          # Именно сам пакет с dev-зависимостями: одного pytest мало,
+          # ядру нужен numpy, и без него тесты падают на импорте.
+          pip install -e ".[dev]"
           python -m pytest -q
       - name: Build
         run: |
