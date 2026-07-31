@@ -77,10 +77,10 @@ def cmd_index(args: argparse.Namespace) -> int:
 
     if transcript is None and not args.no_transcribe:
         transcript = _local_transcript(audio_path or video_path, out_dir, args.lang)
-    if transcript is None:
+    if transcript is None and not args.no_transcribe:
         print(
-            "⚠ транскрипта НЕТ: субтитров у ролика не нашлось, локальная расшифровка "
-            "не отработала. Поиск будет только по тексту с экрана (--ocr).",
+            "⚠ транскрипта нет — искать по речи будет нечему. "
+            "Текст с экрана всё равно доступен: добавьте --ocr.",
             file=sys.stderr,
         )
 
@@ -146,14 +146,12 @@ def _local_transcript(source_path: str, out_dir: str, lang: str | None):
 
     audio = os.path.join(out_dir, "audio16k.wav")
     if not os.path.exists(audio):
-        try:
-            run([which("ffmpeg"), "-v", "error", "-y", "-i", source_path,
-                 "-vn", "-ac", "1", "-ar", "16000", audio])
-        except Exception as exc:
-            print(f"не смог выделить звук: {exc}", file=sys.stderr)
-            return None
+        # check=False: у файла может просто не быть звуковой дорожки, и это
+        # нормальная ситуация, а не повод показывать человеку дамп команды.
+        run([which("ffmpeg"), "-v", "error", "-y", "-i", source_path,
+             "-vn", "-ac", "1", "-ar", "16000", audio], check=False)
     if not os.path.exists(audio) or os.path.getsize(audio) < 1024:
-        print("расшифровка пропущена: в файле нет звуковой дорожки", file=sys.stderr)
+        print("в файле нет звуковой дорожки — расшифровывать нечего", file=sys.stderr)
         return None
     print("расшифровываю локально (ключи не нужны)...", file=sys.stderr)
     try:
