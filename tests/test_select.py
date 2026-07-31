@@ -214,3 +214,47 @@ def test_шумящая_ячейка_не_мешает_дедупу():
     sig.thumbs[5, THUMB_H * 2 // 3:, : THUMB_W // 3] = 200
     assert sig.noisy_mask.any(), "шумящая ячейка не определилась"
     assert sig.thumb_diff(0, 5) == 0.0, "шум камеры протёк в сравнение экранов"
+
+
+def test_быстрый_проход_берёт_каждый_ключевой_кадр():
+    """По ключевым кадрам логика всплесков бессмысленна: между отсчётами секунды.
+
+    Кандидат — каждый ключевой кадр, лишнее убирает дедуп.
+    """
+    times = np.array([0.0, 5.0, 10.0, 15.0, 20.0, 25.0])
+    n = len(times)
+    cells = np.zeros((n, GRID, GRID))
+    cells[:, 0, 1] = 0.4
+    thumbs = np.zeros((n, THUMB_H, THUMB_W), dtype=np.uint8)
+    for i in range(n):
+        thumbs[i] = (i * 37) % 251        # каждый экран свой
+    sig = Signal(times=times, cells=cells, change_global=np.zeros(n), thumbs=thumbs,
+                 width=320, height=180, fps=n / 25.0, keyframes=True)
+    sel = select_frames(sig, 30.0, max_gap=15.0)
+    caught = [p for p in sel.picks if p.reason == "change"]
+    assert len(caught) >= 5, "быстрый проход потерял ключевые кадры"
+    assert not sel.gaps
+
+
+def test_быстрый_проход_схлопывает_одинаковые_экраны():
+    """473 ключевых кадра на статичном ролике — это в основном одно и то же."""
+    n = 40
+    times = np.arange(n) * 5.0
+    cells = np.zeros((n, GRID, GRID))
+    thumbs = np.zeros((n, THUMB_H, THUMB_W), dtype=np.uint8)   # все экраны одинаковые
+    sig = Signal(times=times, cells=cells, change_global=np.zeros(n), thumbs=thumbs,
+                 width=320, height=180, fps=0.2, keyframes=True)
+    sel = select_frames(sig, 200.0, max_gap=15.0)
+    assert sel.dropped_duplicates > 20, "дедуп не сработал на одинаковых экранах"
+    assert not sel.gaps, "покрытие принесено в жертву дедупу"
+
+
+def test_бюджет_кадров_считается_от_длительности():
+    """Константа на любой хронометраж — плохая идея: на трёхчасовой лекции
+    220 кадров это один на 49 секунд при обещанной гарантии в 15."""
+    from frameproof.select import frame_budget
+
+    assert frame_budget(60) == 40           # минутный клип — floor
+    assert frame_budget(2312) == 231        # 38 минут
+    assert frame_budget(3 * 3600) == 600    # три часа — ceil
+    assert frame_budget(2312) > frame_budget(600)

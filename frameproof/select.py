@@ -65,8 +65,17 @@ NOVELTY_BUDGET = 5.0
 #: Ролик короче этого считается коротким: абсолютная гарантия покрытия на нём вырождается.
 SHORT_VIDEO = 180.0
 
-#: Потолок кадров по умолчанию.
+#: Потолок кадров по умолчанию. Константа на любую длительность — плохая идея:
+#: на трёхчасовой лекции 220 кадров это один на 49 секунд при обещанной гарантии в 15,
+#: и потолок начинает драться с покрытием. Считаем от хронометража.
 MAX_FRAMES = 220
+FRAMES_PER_MINUTE = 6.0
+FRAMES_FLOOR, FRAMES_CEIL = 40, 600
+
+
+def frame_budget(duration: float) -> int:
+    """Сколько кадров разумно для ролика такой длины."""
+    return int(min(FRAMES_CEIL, max(FRAMES_FLOOR, round(duration / 60.0 * FRAMES_PER_MINUTE))))
 
 
 @dataclass(frozen=True)
@@ -293,8 +302,10 @@ def select_frames(
     max_gap: float = MAX_GAP,
     min_gap: float = MIN_GAP,
     same_screen: float = SAME_SCREEN,
-    cap: int = MAX_FRAMES,
+    cap: int = 0,
 ) -> Selection:
+    if cap <= 0:
+        cap = frame_budget(duration)
     # Гарантия в 15 секунд на 14-секундном ролике бессмысленна: один кадр, и отчёт
     # гордо пишет «покрытие 100 %». На коротком видео шаг должен быть от длительности.
     if duration < SHORT_VIDEO:
@@ -302,10 +313,19 @@ def select_frames(
 
     # 1. Детект
     picks: list[Pick] = []
-    for start, settle in _bursts(sig, threshold, quiet, merge_gap):
-        strength = float(sig.change[start : settle + 1].max())
-        for i in _split_burst(sig, start, settle, NOVELTY_BUDGET, min_gap):
-            picks.append(Pick(t=float(sig.times[i]), reason="change", change=strength))
+    if sig.keyframes:
+        # По ключевым кадрам логика всплесков бессмысленна: между соседними отсчётами
+        # секунды, «набора команды» там не увидеть. Кандидат — каждый ключевой кадр,
+        # а лишнее уберёт дедуп.
+        picks = [
+            Pick(t=float(t), reason="change", change=float(c))
+            for t, c in zip(sig.times, sig.change)
+        ]
+    else:
+        for start, settle in _bursts(sig, threshold, quiet, merge_gap):
+            strength = float(sig.change[start : settle + 1].max())
+            for i in _split_burst(sig, start, settle, NOVELTY_BUDGET, min_gap):
+                picks.append(Pick(t=float(sig.times[i]), reason="change", change=strength))
     picks.sort(key=lambda p: p.t)
     picks = _enforce_min_gap(picks, min_gap)
 

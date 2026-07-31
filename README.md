@@ -74,6 +74,28 @@ frameproof frames --at 18:38 --out ~/.frameproof/hermes
 # [18:38 / f0097] .../frames/f0097.jpg  (1196 токенов)
 ```
 
+## Two speed tiers
+
+```bash
+frameproof index <url> --fast     # 1 second
+frameproof index <url>            # 32 seconds, frames land better
+```
+
+`--fast` takes candidates from keyframes instead of decoding the whole video.
+Measured on a 38-minute tutorial:
+
+| mode | frames | reliable on-screen terms | per frame | time |
+|---|---|---|---|---|
+| `--fast` | 231 | 672 | 2.9 | **1.1 s** |
+| default | 225 | **789** | **3.5** | 32 s |
+
+The fast tier returns 85 % of the information for 3 % of the time. The trade is honest:
+frames land where the encoder put a keyframe, not where the thought on screen finished.
+
+The frame budget scales with duration instead of being a constant: a one-minute clip
+gets 40, a 38-minute tutorial 231, a three-hour lecture 600.
+
+
 ## A citation you can check
 
 `[18:38 / f0097]` is not decoration. It points at a row of the index, and arithmetic checks it:

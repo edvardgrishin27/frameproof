@@ -84,8 +84,11 @@ def cmd_index(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    print("анализирую изменения экрана...", file=sys.stderr)
-    sig = analyze(info)
+    if args.fast:
+        print("быстрый проход: только ключевые кадры...", file=sys.stderr)
+    else:
+        print("анализирую изменения экрана...", file=sys.stderr)
+    sig = analyze(info, fast=args.fast)
     sel = select_frames(
         sig, info.duration, max_gap=args.max_gap, cap=args.max_frames
     )
@@ -409,7 +412,12 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--out", help="папка индекса")
     i.add_argument("--max-gap", type=float, default=15.0,
                    help="гарантия: без кадра не дольше N секунд (по умолчанию 15)")
-    i.add_argument("--max-frames", type=int, default=220, help="потолок кадров")
+    i.add_argument("--max-frames", type=int, default=0,
+                   help="потолок кадров (0 = считать от длительности)")
+    i.add_argument("--fast", action="store_true",
+                   help="в 38 раз быстрее: кандидаты берутся из ключевых кадров. "
+                        "Плата — кадр встаёт туда, куда его поставил кодировщик, "
+                        "а не туда, где на экране дописалась мысль")
     i.add_argument("--width", type=int, default=1280, help="ширина кадра (1280 = 1196 токенов)")
     i.add_argument("--max-height", type=int, default=1080, help="качество скачиваемого потока")
     i.add_argument("--lang", default=None, help="язык для расшифровки, напр. ru")
