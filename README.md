@@ -3,12 +3,16 @@
 **Your coding agent did not watch that video. It guessed.**
 
 Ask Claude Code to "watch this tutorial" and it samples frames on a scene-change
-threshold. On a screencast that threshold cannot fire — and the agent never tells you
-it went blind.
+threshold. On a screencast that threshold cannot fire. A tool may warn that coverage is
+sparse, but it will not tell you WHERE the hole is — so the agent cannot tell "few frames"
+from "no frames for twenty minutes straight".
 
 Measured on a real 38-minute tutorial, the most popular tool in this niche extracted
-**17 frames** with a **20-minute 51-second gap**. `frameproof` extracted 191 with a
-**14-second** maximum gap. Same file, both tools run from their own code.
+**17 frames by default**, with a **20-minute 51-second gap**. `frameproof` extracted 220
+with a **14-second** maximum gap — first command, no flags.
+
+The full table, including their best mode where they lead on coverage, is in
+[bench/RESULTS.md](bench/RESULTS.md). Hiding it would be less interesting.
 
 ```bash
 pip install frameproof
