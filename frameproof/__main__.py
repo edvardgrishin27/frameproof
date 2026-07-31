@@ -89,8 +89,17 @@ def cmd_index(args: argparse.Namespace) -> int:
     else:
         print("анализирую изменения экрана...", file=sys.stderr)
     sig = analyze(info, fast=args.fast)
+
+    cues: list[float] = []
+    if transcript is not None and not args.no_cues:
+        from .transcribe import pointing_cues
+
+        cues = pointing_cues(transcript)
+        if cues:
+            print(f"якорей по речи («вот здесь», «смотрите»): {len(cues)}", file=sys.stderr)
+
     sel = select_frames(
-        sig, info.duration, max_gap=args.max_gap, cap=args.max_frames
+        sig, info.duration, max_gap=args.max_gap, cap=args.max_frames, cues=cues
     )
     print(f"извлекаю {len(sel.picks)} кадров...", file=sys.stderr)
     frames = extract(info, sel.picks, os.path.join(out_dir, "frames"), width=args.width)
@@ -420,6 +429,8 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--max-height", type=int, default=1080, help="качество скачиваемого потока")
     i.add_argument("--lang", default=None, help="язык для расшифровки, напр. ru")
     i.add_argument("--ocr", action="store_true", help="распознать текст на кадрах (macOS)")
+    i.add_argument("--no-cues", action="store_true",
+                   help="не ставить кадры по указательным репликам («вот здесь», «смотрите»)")
     i.add_argument("--no-transcribe", action="store_true",
                    help="не расшифровывать, если нет субтитров")
     i.set_defaults(func=cmd_index)

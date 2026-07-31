@@ -144,6 +144,13 @@ frameproof doctor               # check what is available
 frameproof install              # install the skill into Claude Code
 ```
 
+```bash
+npx skills add edvardgrishin27/frameproof -g   # Codex, Cursor, Copilot, others
+```
+
+> We have **not** verified this outside Claude Code. The `SKILL.md` format is portable and
+> the manifests are in place, but we will not claim support we did not test — see [CLAIMS.md](CLAIMS.md).
+
 Requires `ffmpeg`. Everything else is optional and degrades gracefully.
 **No API keys, ever.** Subtitles come free from `yt-dlp`; when there are none,
 transcription runs locally.

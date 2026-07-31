@@ -151,6 +151,13 @@ frameproof doctor               # что есть, чего нет
 frameproof install              # поставить скилл в Claude Code
 ```
 
+```bash
+npx skills add edvardgrishin27/frameproof -g   # Codex, Cursor, Copilot и другие
+```
+
+> Вне Claude Code мы это **не проверяли**. Формат `SKILL.md` переносим, манифесты на месте,
+> но заявлять поддержку без живой проверки не будем — см. [CLAIMS.md](CLAIMS.md).
+
 Нужен `ffmpeg`. Остальное необязательно и деградирует мягко.
 **Ключи не нужны нигде.** Субтитры yt-dlp берёт бесплатно; если их нет — расшифровка
 идёт локально.

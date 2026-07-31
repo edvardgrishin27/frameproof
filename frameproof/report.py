@@ -17,7 +17,13 @@ def coverage_lines(sel: Selection, *, frame_w: int = 0, frame_h: int = 0) -> lis
     total = len(sel.picks)
     caught = total - sel.safety_count
 
-    lines.append(f"кадров: {total}  (переходы: {caught}, страховка покрытия: {sel.safety_count})")
+    cues = sum(1 for p in sel.picks if p.is_cue)
+    caught -= cues
+    parts = [f"переходы: {caught}"]
+    if cues:
+        parts.append(f"якоря по речи: {cues}")
+    parts.append(f"страховка покрытия: {sel.safety_count}")
+    lines.append(f"кадров: {total}  ({', '.join(parts)})")
     lines.append(
         f"хронометраж: {tc_short(sel.duration)}   "
         f"1 кадр на {sel.duration / total:.1f} с" if total else "хронометраж: —"

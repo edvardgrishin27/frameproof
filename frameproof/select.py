@@ -62,6 +62,9 @@ BURST_SPLIT = 2.5
 #: превращалось в один всплеск и отдавало один кадр — теряя десятки разных экранов.
 NOVELTY_BUDGET = 5.0
 
+#: Насколько близко к «указательной» реплике обязан стоять кадр, секунды.
+CUE_TOLERANCE = 3.0
+
 #: Ролик короче этого считается коротким: абсолютная гарантия покрытия на нём вырождается.
 SHORT_VIDEO = 180.0
 
@@ -81,12 +84,16 @@ def frame_budget(duration: float) -> int:
 @dataclass(frozen=True)
 class Pick:
     t: float
-    reason: str          # 'change' — поймал переход; 'grid' — страховка покрытия
+    reason: str          # 'change' — переход; 'cue' — якорь по речи; 'grid' — страховка
     change: float
 
     @property
     def is_safety(self) -> bool:
         return self.reason == "grid"
+
+    @property
+    def is_cue(self) -> bool:
+        return self.reason == "cue"
 
 
 @dataclass(frozen=True)
@@ -276,7 +283,9 @@ def _thin(picks: list[Pick], cap: int, duration: float, max_gap: float) -> tuple
                 continue                      # удаление порвало бы гарантию
             # При равном разрыве первым уходит страховочный кадр: пойманный
             # переход несёт больше смысла, чем точка сетки.
-            cost = new_gap - (0.001 if kept[i].is_safety else 0.0)
+            # Якорь по речи ценнее точки сетки, но дешевле пойманного перехода.
+            bonus = 0.001 if kept[i].is_safety else (0.0005 if kept[i].is_cue else 0.0)
+            cost = new_gap - bonus
             if cost < best_cost:
                 best_i, best_cost = i, cost
         if best_i is None:
@@ -302,6 +311,7 @@ def select_frames(
     max_gap: float = MAX_GAP,
     min_gap: float = MIN_GAP,
     same_screen: float = SAME_SCREEN,
+    cues: list[float] | None = None,
     cap: int = 0,
 ) -> Selection:
     if cap <= 0:
@@ -338,7 +348,15 @@ def select_frames(
     # 3. Дедуп — ДО страховки, чтобы не съесть кадры покрытия
     picks, dropped_dup = _dedup(picks, sig, same_screen)
 
-    # 2. Страховка по времени
+    # 2а. Якоря по речи. Там, где человек говорит «вот здесь», кадр обязателен —
+    # даже если картинка не менялась и детектор промолчал. Важность такого момента
+    # задаётся голосом, а не пикселями, и по изменению экрана её не поймать.
+    for t in cues or []:
+        if 0.0 <= t <= duration and all(abs(p.t - t) > CUE_TOLERANCE for p in picks):
+            picks.append(Pick(t=round(t, 3), reason="cue", change=0.0))
+    picks.sort(key=lambda p: p.t)
+
+    # 2б. Страховка по времени
     picks = _fill_gaps(picks, duration, max_gap)
 
     # 4. Бюджет

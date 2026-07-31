@@ -1,0 +1,17 @@
+{
+  "name": "frameproof",
+  "metadata": {
+    "description": "Видео как индекс, а не как куча картинок: покрытие без слепых зон, поиск по речи и тексту с экрана, проверяемые тайм-коды."
+  },
+  "owner": { "name": "Edvard Grishin" },
+  "plugins": [
+    {
+      "name": "frameproof",
+      "description": "Смотрит видео без слепых зон, ищет по речи и по тексту с экрана, проверяет утверждения агента по индексу. Работает офлайн.",
+      "author": { "name": "Edvard Grishin" },
+      "source": "./",
+      "category": "productivity",
+      "homepage": "https://github.com/edvardgrishin27/frameproof"
+    }
+  ]
+}
