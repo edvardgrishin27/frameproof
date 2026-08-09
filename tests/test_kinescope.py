@@ -89,7 +89,28 @@ def test_зашифрованное_видео_отвергается_вслух
     ],
 )
 def test_идентификатор_достаётся_из_ссылки_без_сети(url, expected):
-    assert ks.video_id(url) == expected
+    assert ks.video_id(url)[0] == expected
+
+
+def test_идентификатор_читается_в_обеих_формах_разметки():
+    """Плеер отдаёт `id: "…"`, JSON-состояние страницы — `"id":"…"`.
+
+    Отзыв с Windows: на ссылке kinescope.io/<slug>/<slug> разбор падал с «не нашёл
+    идентификатор», хотя идентификатор на странице был — просто во второй форме.
+    """
+    vid = "eb36cfa7-56eb-4330-a329-0e9aed8d1439"
+    assert ks._ID_IN_PAGE.search(f'id: "{vid}"').group(1) == vid
+    assert ks._ID_IN_PAGE.search(f'{{"id":"{vid}","title":"x"}}').group(1) == vid
+
+
+def test_подпись_ссылки_собирается_из_ссылки_и_страницы():
+    """Закрытому видео манифест без expires/sign отдаёт 403 — и в DASH, и в HLS."""
+    signed = "https://kinescope.io/abc/def?expires=1786000000&sign=deadbeef"
+    assert ks.signature(signed) == "expires=1786000000&sign=deadbeef"
+    # Открытая ссылка — пустая подпись, она никому не мешает.
+    assert ks.signature("https://kinescope.io/embed/abc") == ""
+    # Со страницы подпись тоже достаётся.
+    assert "sign=cafe" in ks.signature('', '<source src="master.mpd?expires=1&sign=cafe">')
 
 
 def test_чужие_ссылки_не_перехватываются():

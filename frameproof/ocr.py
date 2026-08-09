@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import locale
 import os
 import shlex
 import shutil
@@ -60,9 +61,41 @@ _BIN_NAME = "frameproof_ocr"
 
 def available(command: str | None = None) -> bool:
     if command:
-        parts = shlex.split(command)
+        parts = split_command(command)
         return bool(parts) and shutil.which(parts[0]) is not None
     return shutil.which("swiftc") is not None
+
+
+def split_command(command: str) -> list[str]:
+    """Разбор командной строки, не съедающий пути Windows.
+
+    `shlex.split` по умолчанию работает в posix-режиме, где обратная косая — это
+    экранирование. Поэтому `-File D:\\tools\\ocr.ps1` молча превращается в
+    `D:toolsocr.ps1`: ошибки нет, просто файл не находится. На Windows берём
+    posix=False, который косые сохраняет, и снимаем кавычки сами — в этом режиме
+    shlex оставляет их приклеенными к токену.
+    """
+    if os.name != "nt":
+        return shlex.split(command)
+    out = []
+    for tok in shlex.split(command, posix=False):
+        if len(tok) > 1 and tok[0] == tok[-1] and tok[0] in "\"'":
+            tok = tok[1:-1]
+        out.append(tok)
+    return out
+
+
+def _decode(raw: bytes) -> str:
+    """UTF-8, а при неудаче — системная кодировка.
+
+    `subprocess` с `text=True` на Windows декодирует системной ANSI, поэтому
+    распознаватель, отвечающий в UTF-8, молча превращался в кашу. Договор теперь
+    UTF-8, но ANSI-ответ тоже принимается: ломать тех, кто уже подстроился, незачем.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(locale.getpreferredencoding(False), errors="replace")
 
 
 def _build(cache_dir: str) -> str | None:
@@ -90,7 +123,7 @@ def recognize(paths: list[str], *, cache_dir: str, command: str | None = None) -
     if not paths:
         return {}
     if command:
-        argv = shlex.split(command)
+        argv = split_command(command)
         if not argv:
             return {}
     else:
@@ -103,10 +136,12 @@ def recognize(paths: list[str], *, cache_dir: str, command: str | None = None) -
     # Партиями, чтобы не упереться в лимит длины командной строки.
     for i in range(0, len(paths), 60):
         chunk = paths[i : i + 60]
-        proc = subprocess.run([*argv, *chunk], capture_output=True, text=True)
+        # Без text=True: декодируем сами, иначе на Windows ответ читается системной
+        # ANSI и UTF-8 молча превращается в кашу.
+        proc = subprocess.run([*argv, *chunk], capture_output=True)
         if proc.returncode != 0:
             continue
-        for line in proc.stdout.splitlines():
+        for line in _decode(proc.stdout).splitlines():
             path, _, text = line.partition("\t")
             if path:
                 out[path] = text.strip()

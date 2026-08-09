@@ -166,14 +166,19 @@ the downloader ignores the ranges. Measured on an 82-minute lecture: `yt-dlp` es
 ([yt-dlp#12687](https://github.com/yt-dlp/yt-dlp/issues/12687)).
 
 So the fetch is our own, and it is simpler: the server honours any range asked of it,
-so the whole file comes down in a single request.
+so the whole file is addressable directly instead of through 1243 pseudo-segments.
 
 ```bash
 frameproof index "https://kinescope.io/embed/<id>" --ocr
 ```
 
-No keys, no auth. ClearKey-encrypted videos are refused out loud rather than half
-downloaded: decryption needs `mp4decrypt` from Bento4, a separate binary we do not ship.
+Some videos are behind a signed link: without `expires` and `sign` the manifest returns
+403, in DASH and HLS alike. Pass the URL whole, parameters included; if it has none, they
+are looked up on the player page. Downloads run in chunks with resume — the server drops
+a single large request, and a partial file survives both the drop and a restart.
+
+ClearKey-encrypted videos are refused out loud rather than half downloaded: decryption
+needs `mp4decrypt` from Bento4, a separate binary we do not ship.
 
 ## Off the Mac
 
@@ -191,7 +196,8 @@ frameproof index video.mp4 --subs speech.srt
 
 `--ocr-command` is the same contract the internal Swift binary already speaks, simply
 exposed. On Windows 10 and 11 the built-in offline `Windows.Media.Ocr` fits it directly:
-no keys, no install.
+no keys, no install. Reply in UTF-8; a system-ANSI reply is accepted too, but UTF-8 is
+the contract.
 
 On resolution. Display frames are scaled down to `--width` (1280 is a token-cost
 decision), and small interface text does not survive that: the same frame of a GitHub

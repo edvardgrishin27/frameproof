@@ -139,3 +139,33 @@ def test_чужой_распознаватель_вызывается_вмест
 
     got = ocr.recognize(["a.jpg", "b.jpg"], cache_dir=str(tmp_path), command=str(fake))
     assert got == {"a.jpg": "текст с экрана", "b.jpg": "текст с экрана"}
+
+
+def test_путь_windows_не_съедается_разбором_команды(monkeypatch):
+    """shlex в posix-режиме считает обратную косую экранированием.
+
+    Отзыв с Windows: `-File D:\\tools\\ocr.ps1` молча превращался в `D:toolsocr.ps1`.
+    Ошибки нет, просто распознаватель не находится, и человек ищет причину в другом.
+    """
+    from frameproof import ocr
+
+    cmd = r"powershell -NoProfile -File D:\tools\ocr.ps1"
+
+    monkeypatch.setattr(ocr.os, "name", "nt")
+    assert ocr.split_command(cmd)[-1] == r"D:\tools\ocr.ps1"
+    # Кавычки вокруг пути с пробелом снимаются, косые внутри — остаются.
+    assert ocr.split_command(r'"C:\Program Files\ocr.exe" --lang ru') == [
+        r"C:\Program Files\ocr.exe", "--lang", "ru",
+    ]
+
+    monkeypatch.setattr(ocr.os, "name", "posix")
+    assert ocr.split_command("/usr/bin/ocr --lang ru") == ["/usr/bin/ocr", "--lang", "ru"]
+
+
+def test_ответ_распознавателя_читается_в_utf8_и_в_ansi():
+    """text=True на Windows декодирует системной ANSI — UTF-8 превращался в кашу."""
+    from frameproof.ocr import _decode
+
+    assert _decode("экран".encode("utf-8")) == "экран"
+    # Ответ в cp1251 не должен ронять разбор: принимаем и его.
+    assert _decode("экран".encode("cp1251")) != ""

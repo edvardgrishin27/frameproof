@@ -6,9 +6,14 @@ Kinescope это российский видеохостинг, на нём ле
 URL». Обойти это подсовыванием манифеста тоже не выходит — форматы yt-dlp перечислит,
 но скачает не то, см. ниже.
 
-Как устроена отдача. Ключей и авторизации не нужно:
+Как устроена отдача:
 
     https://kinescope.io/<video_id>/master.mpd
+
+Ключей и авторизации не нужно, но часть роликов закрыта ПОДПИСЬЮ ссылки: без
+`expires` и `sign` манифест отвечает 403, одинаково и в DASH, и в HLS. Параметры
+берём из самой ссылки, а если её дали без них — со страницы плеера. Пустая подпись
+открытому видео не мешает.
 
 DASH-манифест, `SegmentList` с байтовыми диапазонами. Все «сегменты» указывают на один
 и тот же файл: у 82-минутной лекции 1243 записи `SegmentURL` и от двух до семи
@@ -18,9 +23,12 @@ DASH-манифест, `SegmentList` с байтовыми диапазонам�
 том же ролике: yt-dlp насчитал 96 ГБ там, где видео весит 121 МБ.
 
 Из устройства путей следует простое решение. Сервер честно отдаёт любой диапазон,
-который у него попросят, поэтому весь файл берётся ОДНИМ запросом по `0/<размер>/`.
-Проверено: `Content-Length` совпадает с размером из пути, длительность скачанного
-совпадает с заявленной в манифесте, кадр с 40-й минуты достаётся за 0.09 с.
+который у него попросят, поэтому весь файл адресуется как `0/<размер>/`. Проверено:
+`Content-Length` совпадает с размером из пути, длительность скачанного совпадает с
+заявленной в манифесте, кадр с 40-й минуты достаётся за 0.09 с.
+
+Качаем при этом не одним запросом, а кусками по 32 МБ с докачкой: на 121 МБ одиночный
+запрос проходил, на 337 МБ сервер рвёт соединение на середине.
 
 Ходим обычным urllib: тащить `requests` в зависимости ради двух GET незачем.
 
@@ -35,6 +43,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -50,7 +59,16 @@ _ID = re.compile(
     re.I,
 )
 #: Идентификатор, зашитый в страницу плеера, — запасной путь для ссылок-обёрток.
-_ID_IN_PAGE = re.compile(r'id:\s*"([0-9a-f-]{36}|\d{6,})"', re.I)
+#: Форм две и обе живые: `id: "…"` в конфиге плеера и `"id":"…"` в JSON-состоянии.
+#: Первая редакция знала только про первую, и на ссылках вида kinescope.io/<slug>/<slug>
+#: разбор падал с «не нашёл идентификатор», хотя идентификатор на странице был.
+_ID_IN_PAGE = re.compile(
+    r'"?\bid"?\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{6,})"',
+    re.I,
+)
+#: Подпись ссылки. У части видео манифест закрыт: без них и master.mpd, и master.m3u8
+#: отвечают 403. Параметры берём из самой ссылки или со страницы плеера.
+_SIGN = re.compile(r"\b(expires|sign|token)=([^&\"'\s<>]+)", re.I)
 
 
 class KinescopeError(RuntimeError):
@@ -71,11 +89,28 @@ def is_kinescope(url: str) -> bool:
     return "kinescope.io" in url.lower()
 
 
-def video_id(url: str) -> str:
+def signature(*sources: str) -> str:
+    """Параметры подписи из ссылки или из страницы плеера. Пусто — если их там нет.
+
+    Закрытому видео манифест без `expires`/`sign` отдаёт 403, причём одинаково и в
+    DASH, и в HLS. Открытому они не нужны и не мешают.
+    """
+    found: dict[str, str] = {}
+    for src in sources:
+        for key, value in _SIGN.findall(src or ""):
+            found.setdefault(key.lower(), value)
+    return "&".join(f"{k}={v}" for k, v in found.items())
+
+
+def video_id(url: str) -> tuple[str, str]:
+    """Идентификатор и параметры подписи. Страница читается только если надо."""
+    sign = signature(url)
     m = _ID.search(url)
     if m:
-        return m.group(1)
-    # Ссылка-обёртка: идентификатор лежит в разметке плеера.
+        return m.group(1), sign
+
+    # Ссылка-обёртка (в том числе kinescope.io/<slug>/<slug>): идентификатор и подпись
+    # лежат в разметке плеера.
     try:
         page = _get(url, referer=url).decode("utf-8", "replace")
     except Exception as exc:
@@ -86,7 +121,7 @@ def video_id(url: str) -> str:
             "не нашёл идентификатор видео на странице. Если видео встроено на чужом "
             "сайте, откройте плеер и возьмите ссылку вида kinescope.io/embed/<id>"
         )
-    return m.group(1)
+    return m.group(1), sign or signature(page)
 
 
 def _get(url: str, *, referer: str = BASE, timeout: float = 30.0) -> bytes:
@@ -95,9 +130,18 @@ def _get(url: str, *, referer: str = BASE, timeout: float = 30.0) -> bytes:
         return resp.read()
 
 
-def manifest(vid: str) -> bytes:
+def manifest(vid: str, sign: str = "") -> bytes:
+    url = MASTER.format(video_id=vid) + (f"?{sign}" if sign else "")
     try:
-        return _get(MASTER.format(video_id=vid))
+        return _get(url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403 and not sign:
+            raise KinescopeError(
+                f"манифест закрыт подписью ({vid}): 403. Откройте плеер и возьмите "
+                "ссылку целиком, вместе с параметрами expires и sign, — они нужны "
+                "и DASH, и HLS одинаково"
+            ) from exc
+        raise KinescopeError(f"манифест не отдался ({vid}): {exc}") from exc
     except Exception as exc:
         raise KinescopeError(f"манифест не отдался ({vid}): {exc}") from exc
 
@@ -167,21 +211,65 @@ def pick_audio(tracks: list[Track]) -> Track | None:
     return max(auds, key=lambda t: t.bandwidth) if auds else None
 
 
-def download(track: Track, dest: str, *, progress=None) -> str:
-    """Скачивает дорожку целиком. Готовый файл того же размера не перекачивается."""
+#: Сколько тянуть одним запросом. Сервер обрывает длинную выдачу: на 121 МБ это не
+#: проявлялось, на 337 МБ соединение падает на середине. Просить кусками надёжнее, а
+#: Range эта раздача поддерживает — отвечает 206 на первый же пробный запрос.
+CHUNK = 32 << 20
+RETRIES = 4
+
+
+def download(track: Track, dest: str, *, progress=None, chunk: int = CHUNK) -> str:
+    """Скачивает дорожку кусками, с докачкой. Готовый файл не перекачивается.
+
+    Раньше здесь был один запрос на весь файл. На большом видео это ломается: сервер
+    закрывает соединение на середине, и повторять приходилось с нуля. Теперь берём
+    диапазонами и продолжаем с того места, где остановились, — недокачанный `.part`
+    переживает и обрыв, и повторный запуск.
+    """
     if os.path.exists(dest) and os.path.getsize(dest) == track.size:
         return dest
+
     tmp = dest + ".part"
-    req = urllib.request.Request(track.url, headers={"Referer": BASE, "User-Agent": "frameproof"})
-    done = 0
-    with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, "wb") as fh:
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            fh.write(chunk)
-            done += len(chunk)
+    done = os.path.getsize(tmp) if os.path.exists(tmp) else 0
+    if done > track.size:                     # чужой или битый остаток — начинаем заново
+        done = 0
+    if progress and done:
+        progress(done, track.size)
+
+    with open(tmp, "r+b" if done else "wb") as fh:
+        fh.seek(done)
+        while done < track.size:
+            end = min(done + chunk, track.size) - 1
+            for attempt in range(RETRIES):
+                try:
+                    part = _get_range(track.url, done, end)
+                    break
+                except Exception as exc:
+                    if attempt == RETRIES - 1:
+                        raise KinescopeError(
+                            f"обрыв загрузки на {done >> 20} МБ из {track.size >> 20}: {exc}. "
+                            f"Недокачанное лежит в {tmp} — повторный запуск продолжит с него"
+                        ) from exc
+            fh.write(part)
+            done += len(part)
             if progress:
                 progress(done, track.size)
+            if not part:                      # сервер молчит — дальше не продвинемся
+                raise KinescopeError(f"сервер вернул пустой кусок на {done >> 20} МБ")
+
     os.replace(tmp, dest)
     return dest
+
+
+def _get_range(url: str, start: int, end: int, *, timeout: float = 60.0) -> bytes:
+    req = urllib.request.Request(url, headers={
+        "Referer": BASE,
+        "User-Agent": "frameproof",
+        "Range": f"bytes={start}-{end}",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read()
+    # 200 вместо 206 означает, что диапазон проигнорировали и прислали файл целиком.
+    if resp.status == 200 and start:
+        return data[start : end + 1]
+    return data

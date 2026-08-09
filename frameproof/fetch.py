@@ -169,8 +169,8 @@ def _fetch_kinescope(url: str, work_dir: str, *, max_height: int,
 
     from . import kinescope as ks
 
-    vid = ks.video_id(url)
-    tracks, duration = ks.parse(ks.manifest(vid))
+    vid, sign = ks.video_id(url)
+    tracks, duration = ks.parse(ks.manifest(vid, sign))
 
     def show(label: str, size: int):
         def cb(done: int, total: int):
