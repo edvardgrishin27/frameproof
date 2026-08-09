@@ -1,17 +1,37 @@
 #!/usr/bin/env python3
 """Воспроизводимый замер: frameproof против claude-video на одном видео.
 
-Честность замера обеспечивается тремя вещами:
+Честность замера обеспечивается четырьмя вещами:
 
 1. Оба инструмента получают ОДИН И ТОТ ЖЕ локальный файл. Никто не качает своё.
 2. claude-video запускается СВОИМ кодом со своими параметрами по умолчанию —
    не пересказом его алгоритма.
 3. Меряется то, что можно проверить: число кадров, максимальный разрыв, доля
    хронометража в зонах без кадров. Не «качество разбора», которое неизмеримо.
+4. У frameproof меряется то, что РЕАЛЬНО ОТДАЁТСЯ пользователю — вместе
+   с якорями по речи.
+
+Про четвёртый пункт отдельно, потому что он тут появился не сразу.
+
+Раньше замер звал `select_frames` без `cues` и показывал 225 кадров, тогда как
+продукт на том же ролике даёт 228: при наличии транскрипта он ставит кадры ещё
+и в моменты, где речь показывает на экран («вот здесь», «смотрите»). Транскрипт
+есть почти всегда — у ролика с YouTube субтитры берутся даром. Получалось, что
+собственный замер занижал инструмент на его же ключевой особенности.
+
+Это не даёт форы: у claude-video такого механизма нет вовсе, и сравнивать
+всё равно приходится продукт с продуктом. Прятать разницу, занижая себя,
+так же нечестно, как завышать.
 
 Запуск:
-    python3 bench/benchmark.py --video path/to/video.mp4
     python3 bench/benchmark.py --url "https://www.youtube.com/watch?v=..."
+        — субтитры подтянутся сами, якоря будут учтены;
+
+    python3 bench/benchmark.py --video path/to/video.mp4 --transcript /tmp/demo
+        — транскрипт берётся из готового индекса (segments.jsonl);
+
+    python3 bench/benchmark.py --video path/to/video.mp4
+        — без транскрипта. Числа выйдут ЗАНИЖЕННЫМИ, о чём будет сказано вслух.
 """
 
 from __future__ import annotations
@@ -51,12 +71,17 @@ def gap_stats(times: list[float], duration: float) -> dict:
     }
 
 
-def run_frameproof(video: str, duration: float, *, extract_frames: bool = True) -> tuple[dict, float]:
-    """Полный проход: детекция И извлечение.
+def run_frameproof(video: str, duration: float, *, cues: list[float] | None = None,
+                   extract_frames: bool = True) -> tuple[dict, float]:
+    """Полный проход: детекция И извлечение, с якорями по речи если они есть.
 
     Извлечение включено намеренно. Прежняя версия бенча меряла у нас только детекцию,
     а у claude-video — детекцию вместе с извлечением, и «41 с против 55 с» было
     сравнением разных стадий. Честно они идут вровень.
+
+    `cues` — моменты, где речь показывает на экран. Продукт их ставит всегда, когда
+    есть транскрипт, поэтому и замер обязан. Без них выходит 225 кадров вместо 228,
+    и инструмент оказывается занижен ровно на свою отличительную черту.
     """
     import tempfile as _tf
 
@@ -68,19 +93,41 @@ def run_frameproof(video: str, duration: float, *, extract_frames: bool = True) 
     t0 = time.time()
     info = probe(video)
     sig = analyze(info)
-    sel = select_frames(sig, info.duration)
+    sel = select_frames(sig, info.duration, cues=cues or [])
     detect = time.time() - t0
     if extract_frames:
         extract(info, sel.picks, _tf.mkdtemp(prefix="fp-bench-frames-"))
     elapsed = time.time() - t0
 
+    cue_picks = sum(1 for p in sel.picks if p.is_cue)
     stats = gap_stats(sel.times, duration)
     stats["coverage_complete"] = not sel.gaps
-    stats["caught_changes"] = len(sel.picks) - sel.safety_count
+    stats["caught_changes"] = len(sel.picks) - sel.safety_count - cue_picks
+    stats["cue_anchors"] = cue_picks
     stats["safety_fills"] = sel.safety_count
     stats["detect_seconds"] = round(detect, 1)
     stats["mode"] = "по умолчанию"
     return stats, elapsed
+
+
+def cues_from_index(path: str) -> list[float]:
+    """Якоря по речи из `segments.jsonl` готового индекса.
+
+    Принимает и папку индекса, и сам файл — чтобы не заставлять помнить структуру.
+    """
+    from frameproof.transcribe import Segment, Transcript, pointing_cues
+
+    seg_file = path if path.endswith(".jsonl") else os.path.join(path, "segments.jsonl")
+    if not os.path.exists(seg_file):
+        raise SystemExit(f"не нашёл транскрипт: {seg_file}")
+    segments = []
+    with open(seg_file, encoding="utf-8") as fh:
+        for line in fh:
+            row = json.loads(line)
+            segments.append(Segment(i=row["i"], t0=row["t0"], t1=row["t1"], text=row["text"]))
+    if not segments:
+        raise SystemExit(f"транскрипт пуст: {seg_file}")
+    return pointing_cues(Transcript(segments=segments, source="index", language=None))
 
 
 def _load_cv(repo_dir: str):
@@ -136,16 +183,29 @@ def main() -> int:
     ap.add_argument("--repo", default=os.path.join(os.path.dirname(__file__), "claude-video"),
                     help="папка с клоном claude-video")
     ap.add_argument("--json", help="куда сложить результат в JSON")
+    ap.add_argument("--transcript", help="папка готового индекса или segments.jsonl — "
+                                         "оттуда берутся якоря по речи")
     args = ap.parse_args()
 
     video = args.video
+    cues: list[float] = []
     if not video:
         if not args.url:
             ap.error("нужен --video или --url")
         from frameproof.fetch import fetch
         work = tempfile.mkdtemp(prefix="fp-bench-")
         print(f"качаю {args.url} ...")
-        video = fetch(args.url, work, max_height=1080).video_path
+        got = fetch(args.url, work, max_height=1080)
+        video = got.video_path
+        if got.subtitle_path:
+            from frameproof.transcribe import from_subtitles, pointing_cues
+            transcript = from_subtitles(
+                got.subtitle_path, auto=got.subtitle_auto, lang=got.subtitle_lang
+            )
+            cues = pointing_cues(transcript)
+
+    if args.transcript:
+        cues = cues_from_index(args.transcript)
 
     if not os.path.exists(args.repo):
         print(f"клонирую claude-video в {args.repo} ...")
@@ -155,11 +215,18 @@ def main() -> int:
     duration = probe(video).duration
     print(f"видео: {os.path.basename(video)}  {mmss(duration)}\n")
 
+    if cues:
+        print(f"якорей по речи («вот здесь», «смотрите»): {len(cues)}\n")
+    else:
+        print("⚠ транскрипта нет — якоря по речи не ставятся, и frameproof выйдет\n"
+              "  ЗАНИЖЕННЫМ относительно того, что получает пользователь.\n"
+              "  Добавьте --url или --transcript <папка индекса>.\n")
+
     runs = []
     for label, mode in CV_MODES:
         st, sec = run_claude_video(video, duration, args.repo, mode)
         runs.append((f"claude-video {label}", st, sec))
-    fp, fp_time = run_frameproof(video, duration)
+    fp, fp_time = run_frameproof(video, duration, cues=cues)
     runs.append(("frameproof", fp, fp_time))
 
     head = ("инструмент / режим", "кадров", "макс. разрыв", ">30 с без кадра", "время")
@@ -177,7 +244,8 @@ def main() -> int:
     print()
     print(f"frameproof: детекция {fp['detect_seconds']} с + извлечение "
           f"{fp['frames']} кадров = {fp_time:.0f} с (like-for-like: их время тоже с извлечением)")
-    print(f"  переходов {fp['caught_changes']}, страховки {fp['safety_fills']}, "
+    якоря = f", якоря по речи {fp['cue_anchors']}" if fp["cue_anchors"] else ""
+    print(f"  переходов {fp['caught_changes']}{якоря}, страховки {fp['safety_fills']}, "
           f"покрытие полное: {fp['coverage_complete']}")
     for name, st, _ in runs[:-1]:
         print(f"{name}: движок «{st['engine']}», кандидатов {st['candidates']}, "
