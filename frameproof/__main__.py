@@ -48,6 +48,20 @@ def cmd_index(args: argparse.Namespace) -> int:
     video_path = args.target
     audio_path: str | None = None
 
+    # Готовые субтитры бьют любую расшифровку: они уже есть, они точнее и они ничего
+    # не стоят. Разбор subtitle-форматов написан давно, но дотянуться до него можно
+    # было только через ссылку — для локального файла с лежащим рядом .vtt входа не
+    # существовало вовсе. На Windows это отрезало расшифровку целиком: mlx-whisper
+    # только под Apple Silicon, а openai-whisper тянет за собой torch.
+    if getattr(args, "subs", None):
+        from .transcribe import from_subtitles
+
+        if not os.path.exists(args.subs):
+            print(f"не нашёл файл субтитров: {args.subs}", file=sys.stderr)
+            return 2
+        transcript = from_subtitles(args.subs, lang=args.lang)
+        print(f"субтитры: {args.subs}, {len(transcript.segments)} реплик", file=sys.stderr)
+
     if not os.path.exists(args.target):
         from .fetch import fetch
 
@@ -55,7 +69,7 @@ def cmd_index(args: argparse.Namespace) -> int:
         print(f"качаю: {args.target}", file=sys.stderr)
         got = fetch(args.target, out_dir, max_height=args.max_height)
         video_path, title, audio_path = got.video_path, got.title, got.audio_path
-        if got.subtitle_path:
+        if got.subtitle_path and transcript is None:
             from .transcribe import from_subtitles
 
             transcript = from_subtitles(
@@ -107,7 +121,7 @@ def cmd_index(args: argparse.Namespace) -> int:
     if args.ocr:
         from . import ocr as ocr_mod
 
-        if ocr_mod.available():
+        if ocr_mod.available(args.ocr_command):
             print("распознаю текст на кадрах...", file=sys.stderr)
 
     index = write(
@@ -121,13 +135,32 @@ def cmd_index(args: argparse.Namespace) -> int:
     )
 
     if args.ocr:
+        import shutil
+        import tempfile
+
         from . import ocr as ocr_mod
 
-        hits = ocr_mod.annotate_index(out_dir)
+        # Показываем ужатый кадр, распознаём крупный. Ширина показа выбрана по цене
+        # токенов, и распознаванию она только мешает: мелкий интерфейс на 1280 не
+        # читается. Крупная копия живёт до конца распознавания и удаляется.
+        ocr_width = args.ocr_width if args.ocr_width > 0 else (info.width or args.width)
+        images, big_dir = None, None
+        if ocr_width > args.width and ocr_mod.available(args.ocr_command):
+            big_dir = tempfile.mkdtemp(prefix="frameproof-ocr-")
+            print(f"переснимаю кадры в {ocr_width} px для распознавания...", file=sys.stderr)
+            big = extract(info, sel.picks, big_dir, width=ocr_width)
+            if len(big) == len(frames):
+                images = [f.path for f in big]
+        try:
+            hits = ocr_mod.annotate_index(out_dir, images=images, command=args.ocr_command)
+        finally:
+            if big_dir:
+                shutil.rmtree(big_dir, ignore_errors=True)
         if hits:
             print(f"текст найден на {hits} кадрах — теперь экран грепается", file=sys.stderr)
-        elif not ocr_mod.available():
-            print("OCR пропущен: нет swiftc (нужны Xcode Command Line Tools)", file=sys.stderr)
+        elif not ocr_mod.available(args.ocr_command):
+            where = args.ocr_command or "swiftc (нужны Xcode Command Line Tools)"
+            print(f"OCR пропущен: не найден {where}", file=sys.stderr)
 
     print()
     print(render(sel, title=title[:60], frame_w=frames[0].width if frames else 0,
@@ -429,6 +462,14 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--max-height", type=int, default=1080, help="качество скачиваемого потока")
     i.add_argument("--lang", default=None, help="язык для расшифровки, напр. ru")
     i.add_argument("--ocr", action="store_true", help="распознать текст на кадрах (macOS)")
+    i.add_argument("--ocr-width", type=int, default=0,
+                   help="ширина копии для распознавания (0 = родное разрешение видео). "
+                        "Кадры показа остаются лёгкими, крупная копия удаляется сразу")
+    i.add_argument("--ocr-command", default=None,
+                   help="чужой распознаватель: принимает пути к картинкам, "
+                        "печатает строки «путь<TAB>текст». Для Windows и Linux")
+    i.add_argument("--subs", default=None,
+                   help="готовые субтитры (.vtt/.srt/.json3) — вместо расшифровки")
     i.add_argument("--no-cues", action="store_true",
                    help="не ставить кадры по указательным репликам («вот здесь», «смотрите»)")
     i.add_argument("--no-transcribe", action="store_true",

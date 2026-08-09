@@ -13,11 +13,18 @@
 
 Требуется macOS со swiftc (идёт с Xcode Command Line Tools). На других системах молча
 возвращаем None — инструмент работает и без OCR.
+
+Чужой распознаватель подключается через `--ocr-command`: программа получает пути к
+картинкам аргументами и отвечает строками `путь<TAB>текст`. Это тот же договор, по
+которому работает свифтовый бинарник внутри, — не новый интерфейс, а вынесенный наружу
+существующий. Так закрывается Windows с её встроенным офлайновым Windows.Media.Ocr,
+которому не нужны ни ключи, ни установка, и любой другой движок под рукой.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -51,7 +58,10 @@ for path in args {
 _BIN_NAME = "frameproof_ocr"
 
 
-def available() -> bool:
+def available(command: str | None = None) -> bool:
+    if command:
+        parts = shlex.split(command)
+        return bool(parts) and shutil.which(parts[0]) is not None
     return shutil.which("swiftc") is not None
 
 
@@ -75,19 +85,25 @@ def _build(cache_dir: str) -> str | None:
     return binary
 
 
-def recognize(paths: list[str], *, cache_dir: str) -> dict[str, str]:
+def recognize(paths: list[str], *, cache_dir: str, command: str | None = None) -> dict[str, str]:
     """Путь к кадру -> распознанный текст. Пустой словарь, если OCR недоступен."""
     if not paths:
         return {}
-    binary = _build(cache_dir)
-    if not binary:
-        return {}
+    if command:
+        argv = shlex.split(command)
+        if not argv:
+            return {}
+    else:
+        binary = _build(cache_dir)
+        if not binary:
+            return {}
+        argv = [binary]
 
     out: dict[str, str] = {}
     # Партиями, чтобы не упереться в лимит длины командной строки.
     for i in range(0, len(paths), 60):
         chunk = paths[i : i + 60]
-        proc = subprocess.run([binary, *chunk], capture_output=True, text=True)
+        proc = subprocess.run([*argv, *chunk], capture_output=True, text=True)
         if proc.returncode != 0:
             continue
         for line in proc.stdout.splitlines():
@@ -97,8 +113,18 @@ def recognize(paths: list[str], *, cache_dir: str) -> dict[str, str]:
     return out
 
 
-def annotate_index(out_dir: str) -> int:
-    """Дописывает OCR-слой в frames.jsonl и пересобирает поиск. Возвращает число кадров с текстом."""
+def annotate_index(
+    out_dir: str, *, images: list[str] | None = None, command: str | None = None
+) -> int:
+    """Дописывает OCR-слой в frames.jsonl и пересобирает поиск. Возвращает число кадров с текстом.
+
+    `images` — на чём распознавать, по одному пути на строку индекса. По умолчанию это
+    сами кадры индекса, но кадры индекса ужаты до ширины показа (1280 — это про цену
+    токенов), и мелкий интерфейс на них не читается. Замер по отзыву с Windows: один и
+    тот же кадр со страницей GitHub при 1280 дал одно слово, при 2560 — имена файлов и
+    строки коммитов. Поэтому распознавать правильно по отдельной, более крупной копии,
+    а показывать по-прежнему лёгкую.
+    """
     import json
 
     from .index import build_search
@@ -108,13 +134,15 @@ def annotate_index(out_dir: str) -> int:
         return 0
 
     rows = [json.loads(line) for line in open(frames_file, encoding="utf-8")]
-    paths = [os.path.join(out_dir, r["path"]) for r in rows]
-    texts = recognize(paths, cache_dir=os.path.join(out_dir, ".cache"))
+    targets = images or [os.path.join(out_dir, r["path"]) for r in rows]
+    if len(targets) != len(rows):
+        targets = [os.path.join(out_dir, r["path"]) for r in rows]
+    texts = recognize(targets, cache_dir=os.path.join(out_dir, ".cache"), command=command)
     if not texts:
         return 0
 
     hits = 0
-    for r, p in zip(rows, paths):
+    for r, p in zip(rows, targets):
         text = texts.get(p, "")
         r["ocr"] = text or None
         if text:

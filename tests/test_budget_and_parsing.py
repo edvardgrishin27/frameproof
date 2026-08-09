@@ -102,3 +102,40 @@ def test_vtt_разбирается_и_чистится_от_разметки():
     segs = parse_vtt(raw)
     assert [s.text for s in segs] == ["привет мир", ">> вторая строка"]
     assert segs[0].t0 == 1.0
+
+
+def test_субтитры_srt_читаются_как_и_vtt(tmp_path):
+    """--subs принимает и .srt: в тайм-коде там запятая, а строки пронумерованы.
+
+    До этого дотянуться до разбора субтитров можно было только через ссылку — своя
+    расшифровка рядом с локальным файлом не подключалась никак.
+    """
+    from frameproof.transcribe import from_subtitles
+
+    f = tmp_path / "речь.srt"
+    f.write_text(
+        "1\n00:00:01,000 --> 00:00:03,500\nПервая строка\n\n"
+        "2\n00:00:04,000 --> 00:00:06,000\nВторая строка\n",
+        encoding="utf-8",
+    )
+    tr = from_subtitles(str(f), lang="ru")
+    assert [s.text for s in tr.segments] == ["Первая строка", "Вторая строка"]
+    assert tr.segments[0].t0 == 1.0 and tr.segments[0].t1 == 3.5
+    assert tr.language == "ru"
+
+
+def test_чужой_распознаватель_вызывается_вместо_свифта(tmp_path):
+    """--ocr-command закрывает Windows и Linux: договор тот же «путь<TAB>текст»."""
+    import stat
+
+    from frameproof import ocr
+
+    fake = tmp_path / "ocr.sh"
+    fake.write_text('#!/bin/sh\nfor p in "$@"; do printf "%s\\tтекст с экрана\\n" "$p"; done\n')
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    assert ocr.available(str(fake)) is True
+    assert ocr.available("/несуществующий/бинарник") is False
+
+    got = ocr.recognize(["a.jpg", "b.jpg"], cache_dir=str(tmp_path), command=str(fake))
+    assert got == {"a.jpg": "текст с экрана", "b.jpg": "текст с экрана"}

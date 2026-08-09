@@ -155,6 +155,30 @@ Requires `ffmpeg`. Everything else is optional and degrades gracefully.
 **No API keys, ever.** Subtitles come free from `yt-dlp`; when there are none,
 transcription runs locally.
 
+## Off the Mac
+
+Two places grew up on a MacBook: text recognition went through Apple Vision, and local
+transcription through mlx-whisper on Apple Silicon. Both doors now open outward, with
+the core untouched.
+
+```bash
+# your own recognizer: takes image paths, prints "path<TAB>text"
+frameproof index video.mp4 --ocr --ocr-command "python ocr_windows.py"
+
+# your own subtitles instead of transcription — .vtt, .srt or .json3
+frameproof index video.mp4 --subs speech.srt
+```
+
+`--ocr-command` is the same contract the internal Swift binary already speaks, simply
+exposed. On Windows 10 and 11 the built-in offline `Windows.Media.Ocr` fits it directly:
+no keys, no install.
+
+On resolution. Display frames are scaled down to `--width` (1280 is a token-cost
+decision), and small interface text does not survive that: the same frame of a GitHub
+page yielded one word at 1280 and full filenames and commit lines at 2560. Recognition
+therefore runs on a separate full-resolution copy that is deleted right after, controlled
+by `--ocr-width`. What you show stays cheap.
+
 ## Use in Claude Code
 
 After `frameproof install`, just ask: *"watch this video and tell me which command he
