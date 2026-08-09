@@ -67,7 +67,10 @@ def cmd_index(args: argparse.Namespace) -> int:
 
         source_url = args.target
         print(f"качаю: {args.target}", file=sys.stderr)
-        got = fetch(args.target, out_dir, max_height=args.max_height)
+        got = fetch(
+            args.target, out_dir, max_height=args.max_height,
+            want_audio=not (args.no_transcribe or transcript is not None),
+        )
         video_path, title, audio_path = got.video_path, got.title, got.audio_path
         if got.subtitle_path and transcript is None:
             from .transcribe import from_subtitles

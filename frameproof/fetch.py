@@ -11,6 +11,9 @@
 
 yt-dlp дёргается как БИБЛИОТЕКА, а не через CLI: в песочнице у CLI бывает
 `curl: (6) Could not resolve host`, тогда как библиотечный путь работает.
+
+Kinescope идёт мимо yt-dlp целиком — экстрактора там нет, а через манифест он качает
+не то. Своя загрузка в `kinescope.py`, туда же вынесены измерения и ссылки на заявки.
 """
 
 from __future__ import annotations
@@ -71,9 +74,17 @@ def _pick_subtitle(info: dict, langs=SUB_LANGS) -> tuple[str | None, str | None,
 
 
 def fetch(url: str, work_dir: str, *, max_height: int = 1080,
-          langs=SUB_LANGS, want_video: bool = True) -> Fetched:
-    yt_dlp = _ydl()
+          langs=SUB_LANGS, want_video: bool = True, want_audio: bool = True) -> Fetched:
     os.makedirs(work_dir, exist_ok=True)
+
+    from .kinescope import is_kinescope
+
+    if is_kinescope(url):
+        return _fetch_kinescope(
+            url, work_dir, max_height=max_height, want_video=want_video, want_audio=want_audio
+        )
+
+    yt_dlp = _ydl()
     info = probe_remote(url)
 
     sub_path = None
@@ -144,4 +155,54 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
             "channel": info.get("channel"),
             "upload_date": info.get("upload_date"),
         },
+    )
+
+
+def _fetch_kinescope(url: str, work_dir: str, *, max_height: int,
+                     want_video: bool, want_audio: bool = True) -> Fetched:
+    """Kinescope мимо yt-dlp: экстрактора там нет, а через манифест он качает не то.
+
+    Подробности устройства и ссылки на заявки — в `kinescope.py`. Субтитров хостинг
+    не отдаёт, поэтому звук берём всегда: расшифровывать иначе будет нечего.
+    """
+    import sys
+
+    from . import kinescope as ks
+
+    vid = ks.video_id(url)
+    tracks, duration = ks.parse(ks.manifest(vid))
+
+    def show(label: str, size: int):
+        def cb(done: int, total: int):
+            if total and (done % (16 << 20) < (1 << 20) or done >= total):
+                print(f"\r{label}: {done * 100 // total} % из {total >> 20} МБ",
+                      end="", file=sys.stderr, flush=True)
+        return cb
+
+    video_path = ""
+    if want_video:
+        track = ks.pick_video(tracks, max_height)
+        print(f"kinescope: {track.height}p, {track.size >> 20} МБ", file=sys.stderr)
+        video_path = ks.download(
+            track, os.path.join(work_dir, "video.mp4"), progress=show("видео", track.size)
+        )
+        print("", file=sys.stderr)
+
+    # Звук весит как половина видео, а при готовых субтитрах или --no-transcribe
+    # он не нужен вовсе. Качать его «на всякий случай» — сто мегабайт впустую.
+    audio_path = None
+    audio = ks.pick_audio(tracks) if want_audio else None
+    if audio:
+        audio_path = ks.download(
+            audio, os.path.join(work_dir, "audio.m4a"), progress=show("звук", audio.size)
+        )
+        print("", file=sys.stderr)
+
+    return Fetched(
+        video_path=video_path,
+        title=f"kinescope {vid}",
+        duration=duration,
+        source_url=url,
+        audio_path=audio_path,
+        extra={"id": vid, "host": "kinescope"},
     )

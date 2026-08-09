@@ -155,6 +155,26 @@ Requires `ffmpeg`. Everything else is optional and degrades gracefully.
 **No API keys, ever.** Subtitles come free from `yt-dlp`; when there are none,
 transcription runs locally.
 
+## Kinescope
+
+A Russian video host carrying courses and webinars. `yt-dlp` cannot fetch it: the
+extractor request has been open since 2022 and the page returns "Unsupported URL".
+Handing it the manifest directly does not help either — it lists the formats but
+downloads the wrong thing: 1243 "segments" point at one file through byte ranges, and
+the downloader ignores the ranges. Measured on an 82-minute lecture: `yt-dlp` estimated
+**96 GiB** for a video that weighs **121 MB**
+([yt-dlp#12687](https://github.com/yt-dlp/yt-dlp/issues/12687)).
+
+So the fetch is our own, and it is simpler: the server honours any range asked of it,
+so the whole file comes down in a single request.
+
+```bash
+frameproof index "https://kinescope.io/embed/<id>" --ocr
+```
+
+No keys, no auth. ClearKey-encrypted videos are refused out loud rather than half
+downloaded: decryption needs `mp4decrypt` from Bento4, a separate binary we do not ship.
+
 ## Off the Mac
 
 Two places grew up on a MacBook: text recognition went through Apple Vision, and local
