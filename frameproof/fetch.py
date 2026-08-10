@@ -19,6 +19,9 @@ Kinescope идёт мимо yt-dlp целиком — экстрактора т�
 from __future__ import annotations
 
 import os
+import sys
+import time
+import urllib.error
 from dataclasses import dataclass, field
 
 SUB_LANGS = ("ru", "en")
@@ -47,10 +50,75 @@ def _ydl():
     return yt_dlp
 
 
+#: Паузы перед повторной попыткой, секунды. Короткие намеренно.
+#:
+#: Соблазн поставить долгое ожидание велик, но данными он не подтверждается: при
+#: разборе трёх видео подряд YouTube отдал 429, паузы в 4 и 15 минут не дали
+#: ничего, а смена клиента взяла файл с первой попытки. Значит лимит привязан не
+#: ко времени, а к клиенту — ждать дольше бессмысленно, дешевле сменить клиента.
+_ПАУЗЫ = (5, 15, 45)
+#: Клиенты YouTube по порядку. `None` — как ходит yt-dlp по умолчанию.
+#:
+#: Своё, а не встроенные `retries`/`extractor_retries`/`sleep_interval` yt-dlp:
+#: те умеют только ждать, а менять `player_client` между попытками — нет. То есть
+#: дают ровно то, что здесь не сработало.
+_КЛИЕНТЫ = (None, "android", "ios", "web_safari")
+
+
+def _это_лимит(exc: Exception) -> bool:
+    """Похоже ли на 429. На других ошибках повторять нечего — они не пройдут."""
+    if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
+        return True
+    текст = str(exc)
+    return "429" in текст or "Too Many Requests" in текст
+
+
+def _с_повторами(сделать, что: str, *, спать=time.sleep):
+    """Выполнить `сделать(доп_опции)`, повторяя при 429 и меняя клиента.
+
+    Один механизм на все четыре точки загрузки — метаданные, субтитры, аудио и
+    видео. Раньше повторов не было нигде: `ydl.download([url])` вызывался голым,
+    и любая сетевая ошибка роняла команду целиком. Причём обёрнуто в `try` было
+    только аудио, и то молча — при 429 расшифровка просто исчезала, а человек не
+    узнавал почему.
+
+    Возвращает `(результат, клиент)`: имя клиента нужно записать в лог, иначе
+    потом не понять, откуда взялось другое качество картинки.
+    """
+    неудачи = []
+    for клиент in _КЛИЕНТЫ:
+        доп = ({} if клиент is None
+               else {"extractor_args": {"youtube": {"player_client": [клиент]}}})
+        for пауза in (0,) + _ПАУЗЫ:
+            if пауза:
+                спать(пауза)
+            try:
+                return сделать(доп), клиент
+            except Exception as exc:
+                if not _это_лимит(exc):
+                    raise
+                неудачи.append((клиент or "по умолчанию", пауза))
+    потрачено = len(_КЛИЕНТЫ) * sum(_ПАУЗЫ)
+    raise RuntimeError(
+        f"{что}: YouTube отвечает 429 (слишком много запросов). "
+        f"Попыток: {len(неудачи)}, клиенты: "
+        f"{', '.join(dict.fromkeys(k for k, _ in неудачи))}. "
+        f"Ждали суммарно {потрачено} с.\n"
+        "  Что делать: подождите 10–20 минут и повторите, либо скачайте файл "
+        "сами (`yt-dlp -f 'bv*[height<=1080]' <ссылка>`) и подайте путь к файлу "
+        "вместо ссылки — frameproof принимает и то, и другое."
+    )
+
+
 def probe_remote(url: str) -> dict:
     yt_dlp = _ydl()
-    with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
-        return ydl.extract_info(url, download=False)
+
+    def взять(доп):
+        with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True, **доп}) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    info, _ = _с_повторами(взять, "метаданные")
+    return info
 
 
 def _pick_subtitle(info: dict, langs=SUB_LANGS) -> tuple[str | None, str | None, bool]:
@@ -90,8 +158,11 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
     sub_path = None
     sub_url, sub_lang, sub_auto = _pick_subtitle(info, langs)
     if sub_url:
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
-            raw = ydl.urlopen(sub_url).read()
+        def взять_субтитры(доп):
+            with yt_dlp.YoutubeDL({"quiet": True, **доп}) as ydl:
+                return ydl.urlopen(sub_url).read()
+
+        raw, _ = _с_повторами(взять_субтитры, "субтитры")
         ext = "json3" if b'"events"' in raw[:400] else "vtt"
         sub_path = os.path.join(work_dir, f"subs.{sub_lang}.{ext}")
         with open(sub_path, "wb") as fh:
@@ -103,13 +174,22 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
     if not sub_path:
         audio_path = os.path.join(work_dir, "audio.m4a")
         if not os.path.exists(audio_path):
-            try:
+            def взять_аудио(доп):
                 with yt_dlp.YoutubeDL({
                     "quiet": True, "no_warnings": True,
-                    "outtmpl": audio_path, "format": "ba/bestaudio/best",
+                    "outtmpl": audio_path, "format": "ba/bestaudio/best", **доп,
                 }) as ydl:
-                    ydl.download([url])
-            except Exception:
+                    return ydl.download([url])
+
+            try:
+                _, клиент = _с_повторами(взять_аудио, "аудиодорожка")
+                if клиент:
+                    print(f"аудио взято клиентом {клиент}", file=sys.stderr)
+            except Exception as exc:
+                # Раньше ошибка глоталась молча, и расшифровка просто исчезала —
+                # человек видел индекс без транскрипта и не знал почему.
+                print(f"не удалось скачать аудио: {exc}", file=sys.stderr)
+                print("  индекс соберётся, но без расшифровки речи", file=sys.stderr)
                 audio_path = None
         if audio_path and not os.path.exists(audio_path):
             audio_path = next(
@@ -133,8 +213,15 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
                     f"b[height<={max_height}]"
                 ),
             }
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
+            def взять_видео(доп):
+                with yt_dlp.YoutubeDL({**opts, **доп}) as ydl:
+                    return ydl.download([url])
+
+            _, клиент = _с_повторами(взять_видео, "видео")
+            if клиент:
+                # Клиенты отдают разные наборы форматов: без этой строки потом не
+                # понять, почему картинка вышла хуже запрошенной.
+                print(f"видео взято клиентом {клиент}", file=sys.stderr)
         if not os.path.exists(video_path):
             for name in os.listdir(work_dir):
                 if name.startswith("video.") and not name.endswith((".part", ".ytdl")):

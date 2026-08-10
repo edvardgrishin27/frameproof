@@ -1,7 +1,7 @@
 {
   "name": "frameproof",
   "description": "Агент смотрит видео без слепых зон и доказывает тайм-кодом, что именно он видел. Офлайн, без API-ключей.",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "author": { "name": "Edvard Grishin" },
   "homepage": "https://github.com/edvardgrishin27/frameproof",
   "license": "MIT"
