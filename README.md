@@ -177,6 +177,13 @@ Some videos are behind a signed link: without `expires` and `sign` the manifest 
 are looked up on the player page. Downloads run in chunks with resume — the server drops
 a single large request, and a partial file survives both the drop and a restart.
 
+Audio sits in the manifest under a different shape — `BaseURL` pointing straight at
+the file plus byte ranges — and is fetched alongside the video. DASH carries no
+subtitles, but for some videos a ready track exists in the HLS manifest of the same
+video: when one is found it is used and the audio is not downloaded at all.
+Auto-generated tracks are flagged as such — the host serves ASR, and ASR is wrong
+sometimes.
+
 ClearKey-encrypted videos are refused out loud rather than half downloaded: decryption
 needs `mp4decrypt` from Bento4, a separate binary we do not ship.
 

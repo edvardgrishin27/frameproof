@@ -13,7 +13,11 @@ yt-dlp дёргается как БИБЛИОТЕКА, а не через CLI: �
 `curl: (6) Could not resolve host`, тогда как библиотечный путь работает.
 
 Kinescope идёт мимо yt-dlp целиком — экстрактора там нет, а через манифест он качает
-не то. Своя загрузка в `kinescope.py`, туда же вынесены измерения и ссылки на заявки.
+не то. Своя загрузка в `kinescope.py`: видео и звук берутся из DASH, а субтитры — из
+HLS того же ролика (тот же ID и подпись, `master.m3u8` вместо `master.mpd`). Принцип
+«сначала субтитры» из пункта 1 действует и здесь: DASH субтитров не содержит, но если
+готовая дорожка нашлась в HLS, звук не качаем вовсе — расшифровывать по нему нечего.
+Измерения и ссылки на заявки — там же, в `kinescope.py`.
 """
 
 from __future__ import annotations
@@ -149,7 +153,8 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
 
     if is_kinescope(url):
         return _fetch_kinescope(
-            url, work_dir, max_height=max_height, want_video=want_video, want_audio=want_audio
+            url, work_dir, max_height=max_height, want_video=want_video,
+            want_audio=want_audio, langs=langs,
         )
 
     yt_dlp = _ydl()
@@ -246,11 +251,15 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
 
 
 def _fetch_kinescope(url: str, work_dir: str, *, max_height: int,
-                     want_video: bool, want_audio: bool = True) -> Fetched:
+                     want_video: bool, want_audio: bool = True,
+                     langs=SUB_LANGS) -> Fetched:
     """Kinescope мимо yt-dlp: экстрактора там нет, а через манифест он качает не то.
 
-    Подробности устройства и ссылки на заявки — в `kinescope.py`. Субтитров хостинг
-    не отдаёт, поэтому звук берём всегда: расшифровывать иначе будет нечего.
+    Подробности устройства и ссылки на заявки — в `kinescope.py`. Субтитров в
+    DASH-манифесте нет вовсе, но тот же ролик отдаётся и по HLS, и там для части
+    видео есть готовая дорожка — берём её оттуда тем же порядком, что и на
+    YouTube-ветке выше: сначала субтитры, и если нашлись — звук не качаем вовсе,
+    расшифровывать по нему было бы нечего.
     """
     import sys
 
@@ -275,10 +284,31 @@ def _fetch_kinescope(url: str, work_dir: str, *, max_height: int,
         )
         print("", file=sys.stderr)
 
-    # Звук весит как половина видео, а при готовых субтитрах или --no-transcribe
-    # он не нужен вовсе. Качать его «на всякий случай» — сто мегабайт впустую.
+    # СНАЧАЛА СУБТИТРЫ, тем же принципом, что и в YouTube-ветке этого модуля. DASH
+    # их не отдаёт вовсе, поэтому идём в HLS того же ролика (тот же ID и подпись).
+    # Субтитры — бонус, а не обязательная часть разбора: любая ошибка здесь (нет
+    # HLS, 403, кривой плейлист, оборвалась загрузка) не должна ронять видео —
+    # раньше на YouTube-аудио такая ошибка глоталась молча, и это было прямой
+    # ошибкой прошлой редакции, повторять её здесь незачем.
+    sub_path = sub_lang = None
+    sub_auto = False
+    try:
+        sub_tracks = ks.parse_subtitles(ks.hls_master(vid, sign), vid)
+        chosen = ks.pick_subtitle(sub_tracks, langs)
+        if chosen:
+            sub_path = ks.download_subtitle(
+                chosen, os.path.join(work_dir, f"subs.{chosen.lang}.vtt")
+            )
+            sub_lang, sub_auto = chosen.lang, chosen.auto
+    except Exception as exc:
+        print(f"не удалось получить субтитры: {exc}", file=sys.stderr)
+        print("  расшифровка пойдёт по звуку, если он нужен", file=sys.stderr)
+
+    # Звук весит как половина видео. Не качаем его, если явно попросили не качать
+    # (want_audio=False — на это решение субтитры не влияют) или если субтитры уже
+    # нашлись (тогда расшифровывать по звуку незачем — ровно как на YouTube).
     audio_path = None
-    audio = ks.pick_audio(tracks) if want_audio else None
+    audio = ks.pick_audio(tracks) if (want_audio and not sub_path) else None
     if audio:
         audio_path = ks.download(
             audio, os.path.join(work_dir, "audio.m4a"), progress=show("звук", audio.size)
@@ -290,6 +320,9 @@ def _fetch_kinescope(url: str, work_dir: str, *, max_height: int,
         title=f"kinescope {vid}",
         duration=duration,
         source_url=url,
+        subtitle_path=sub_path,
+        subtitle_lang=sub_lang,
+        subtitle_auto=sub_auto,
         audio_path=audio_path,
         extra={"id": vid, "host": "kinescope"},
     )

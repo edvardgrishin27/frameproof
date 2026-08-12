@@ -27,10 +27,28 @@ DASH-манифест, `SegmentList` с байтовыми диапазонам�
 `Content-Length` совпадает с размером из пути, длительность скачанного совпадает с
 заявленной в манифесте, кадр с 40-й минуты достаётся за 0.09 с.
 
+Аудио в том же манифесте размечено ДРУГОЙ формой `SegmentList`. У `SegmentURL` там
+нет атрибута `media` вовсе — есть только `mediaRange`, а `BaseURL` указывает прямо
+на файл (`audio_0.mp4`), не на каталог с путём внутри. `mediaRange` включает обе
+границы, поэтому размер файла — не последний «конец» сам по себе, а «конец плюс
+один»: у дорожки с последним диапазоном `30908095-30913504` файл весит 30913505
+байт, и сервер это подтверждает — на запрос с `Range` отвечает `206` с
+`Content-Range: bytes 0-1048575/30913505`. Первая редакция эту форму не различала:
+цикл собирал `media` по всем `SegmentURL`, получал список пустых строк (атрибута
+там нет), не набирал `total` ни на одном элементе и молча выбрасывал дорожку целиком
+— аудио пропадало из разбора, расшифровывать было нечего.
+
 Качаем при этом не одним запросом, а кусками по 32 МБ с докачкой: на 121 МБ одиночный
 запрос проходил, на 337 МБ сервер рвёт соединение на середине.
 
 Ходим обычным urllib: тащить `requests` в зависимости ради двух GET незачем.
+
+Субтитров DASH-манифест не содержит вовсе — в нём только два `AdaptationSet`,
+`video/mp4` и `audio/mp4`. Но тот же ролик отдаётся и по HLS, тем же ID и той же
+подписью (`master.m3u8` вместо `master.mpd`), и там для части видео есть готовая
+дорожка — строкой `EXT-X-MEDIA:TYPE=SUBTITLES`, ссылающейся на плейлист с одним
+готовым `.vtt`. HLS здесь используется ТОЛЬКО ради субтитров: видео и звук как
+качались через DASH, так и качаются, дублировать этот путь через HLS незачем.
 
 Чего здесь НЕТ. Часть видео на Kinescope зашифрована ClearKey — у таких в манифесте
 стоит `ContentProtection`, а ключ выдаётся по запросу на `license.kinescope.io`.
@@ -47,9 +65,11 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from urllib.parse import urljoin
 
 BASE = "https://kinescope.io"
 MASTER = BASE + "/{video_id}/master.mpd"
+HLS_MASTER = BASE + "/{video_id}/master.m3u8"
 NS = {"m": "urn:mpeg:dash:schema:mpd:2011"}
 
 #: UUID видео или старый числовой идентификатор.
@@ -188,22 +208,48 @@ def parse(mpd: bytes) -> tuple[list[Track], float]:
         kind = "audio" if "audio" in (aset.get("mimeType") or "") else "video"
         for rep in aset.findall("m:Representation", NS):
             base = (rep.findtext("m:BaseURL", default="", namespaces=NS) or "").strip()
-            media = [s.get("media", "") for s in rep.findall(".//m:SegmentURL", NS)]
-            if not base or not media:
+            segs = rep.findall(".//m:SegmentURL", NS)
+            if not base or not segs:
                 continue
-            # Путь сегмента — «<начало>/<конец>/<файл>». Самый большой «конец» и есть
-            # размер всей дорожки, а «0/<размер>/<файл>» сервер отдаёт одним куском.
-            total, name, query = 0, "", ""
-            for m in media:
-                head, _, tail = m.partition("?")
-                parts = head.split("/")
-                if len(parts) < 3 or not parts[1].isdigit():
+
+            # Форма А (видео) и форма Б (аудио) различаются наличием `media`: у формы
+            # А он есть на каждом `SegmentURL`, у формы Б атрибута нет вовсе — там
+            # только `mediaRange`. Смешивать формы внутри одной Representation
+            # незачем, живой манифест так не делает.
+            media = [s.get("media") for s in segs]
+            if any(media):
+                # Путь сегмента — «<начало>/<конец>/<файл>». Самый большой «конец» и
+                # есть размер всей дорожки, а «0/<размер>/<файл>» сервер отдаёт одним
+                # куском.
+                total, name, query = 0, "", ""
+                for m in media:
+                    if not m:
+                        continue
+                    head, _, tail = m.partition("?")
+                    parts = head.split("/")
+                    if len(parts) < 3 or not parts[1].isdigit():
+                        continue
+                    if int(parts[1]) > total:
+                        total, name, query = int(parts[1]), parts[-1], tail
+                if not total:
                     continue
-                if int(parts[1]) > total:
-                    total, name, query = int(parts[1]), parts[-1], tail
-            if not total:
-                continue
-            url = f"{base}0/{total}/{name}" + (f"?{query}" if query else "")
+                url = f"{base}0/{total}/{name}" + (f"?{query}" if query else "")
+            else:
+                # `BaseURL` здесь — уже прямая ссылка на файл, дописывать нечего.
+                # Размер — максимальный «конец» среди `mediaRange`, плюс один: границы
+                # в mediaRange включают обе стороны, и «30908095-30913504» покрывает
+                # байт номер 30913504 включительно, то есть файл весит 30913505.
+                # Проверено живьём: сервер на Range отвечает 206 с
+                # `Content-Range: bytes 0-1048575/30913505` — сходится с расчётом.
+                ends = []
+                for s in segs:
+                    _, _, end = s.get("mediaRange", "").partition("-")
+                    if end.isdigit():
+                        ends.append(int(end))
+                if not ends:
+                    continue
+                total = max(ends) + 1
+                url = base
             tracks.append(Track(
                 kind=kind,
                 url=url,
@@ -237,6 +283,126 @@ def pick_video(tracks: list[Track], max_height: int = 1080) -> Track:
 def pick_audio(tracks: list[Track]) -> Track | None:
     auds = [t for t in tracks if t.kind == "audio"]
     return max(auds, key=lambda t: t.bandwidth) if auds else None
+
+
+@dataclass(frozen=True)
+class SubtitleTrack:
+    lang: str            # код языка из LANGUAGE, как есть, в нижнем регистре
+    name: str             # человекочитаемое имя из NAME
+    url: str              # ссылка на плейлист дорожки, уже абсолютная
+    auto: bool = False    # автоматические (ASR) или ручные
+
+
+#: Атрибуты строки `#EXT-X-MEDIA:…`: `КЛЮЧ="значение в кавычках"` или `КЛЮЧ=значение`
+#: без них (в HLS так пишут перечислимые значения вроде `YES`/`SUBTITLES`).
+_HLS_ATTR = re.compile(r'([A-Za-z0-9-]+)=(?:"([^"]*)"|([^,]*))')
+#: Признак автоматической дорожки в имени. По фактам с двух виденных роликов имя
+#: содержит либо «(Автоматические)», либо `Automatic` — нижняя граница совпадения по
+#: подстроке «авто»/«auto» хватает на оба варианта. Не распознали — считаем дорожку
+#: ручной, это не ошибка: ложноотрицательный `auto` не мешает ни выбору, ни скачиванию.
+_AUTO_HINT = re.compile(r"авто|auto", re.I)
+
+
+def _hls_attrs(line: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for m in _HLS_ATTR.finditer(line):
+        key, quoted, bare = m.group(1), m.group(2), m.group(3)
+        attrs[key] = quoted if quoted is not None else bare
+    return attrs
+
+
+def hls_master(vid: str, sign: str = "") -> bytes:
+    """HLS-мастер того же ролика — нужен только ради субтитров, DASH их не содержит.
+
+    ID и подпись те же, что и у DASH: `master.m3u8` вместо `master.mpd`. Видео и звук
+    отсюда не берём — это осталось за `manifest()`/`parse()`, дублировать незачем.
+    """
+    url = HLS_MASTER.format(video_id=vid) + (f"?{sign}" if sign else "")
+    try:
+        return _get(url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403 and not sign:
+            raise KinescopeError(
+                f"HLS-мастер закрыт подписью ({vid}): 403. Нужны те же expires и "
+                "sign, что и для DASH"
+            ) from exc
+        raise KinescopeError(f"HLS-мастер не отдался ({vid}): {exc}") from exc
+    except Exception as exc:
+        raise KinescopeError(f"HLS-мастер не отдался ({vid}): {exc}") from exc
+
+
+def parse_subtitles(m3u8: bytes, vid: str) -> list[SubtitleTrack]:
+    """Дорожки субтитров из строк `#EXT-X-MEDIA:TYPE=SUBTITLES` HLS-мастера.
+
+    Пустой список — не ошибка: часть роликов субтитров не имеет вовсе, и это
+    штатный случай, а не повод падать.
+
+    `URI` в мастере относительный (`media.m3u8?id=…`), и склеивать его нужно с
+    `https://kinescope.io/<video_id>/` — это подтверждено на живом мастере, где
+    полный путь получался именно так.
+    """
+    base = f"{BASE}/{vid}/"
+    tracks: list[SubtitleTrack] = []
+    for line in m3u8.decode("utf-8", "replace").splitlines():
+        if not line.startswith("#EXT-X-MEDIA:"):
+            continue
+        attrs = _hls_attrs(line)
+        if (attrs.get("TYPE") or "").upper() != "SUBTITLES":
+            continue
+        uri = attrs.get("URI")
+        if not uri:
+            continue
+        name = attrs.get("NAME", "")
+        tracks.append(SubtitleTrack(
+            lang=(attrs.get("LANGUAGE") or "").lower(),
+            name=name,
+            url=urljoin(base, uri),
+            auto=bool(_AUTO_HINT.search(name)),
+        ))
+    return tracks
+
+
+def pick_subtitle(tracks: list[SubtitleTrack], langs: tuple[str, ...] = ("ru", "en")) -> SubtitleTrack | None:
+    """Выбирает дорожку по приоритету языков; внутри языка — ручную раньше авто."""
+    for lang in langs:
+        matches = [t for t in tracks if t.lang == lang]
+        if matches:
+            return min(matches, key=lambda t: t.auto)
+    return None
+
+
+def download_subtitle(track: SubtitleTrack, dest: str) -> str:
+    """Скачивает готовую дорожку целиком в `.vtt`.
+
+    Плейлист дорожки на практике — одна строка-ссылка на цельный `.vtt` (весь файл
+    одним «сегментом», не нарезкой на куски), но закладываться на это нельзя: берём
+    все строки, не начинающиеся с `#`, и если их несколько — склеиваем содержимое по
+    порядку. Ссылки внутри плейлиста бывают и абсолютными, и относительными к самому
+    плейлисту.
+    """
+    try:
+        playlist = _get(track.url).decode("utf-8", "replace")
+    except Exception as exc:
+        raise KinescopeError(f"плейлист субтитров не отдался: {exc}") from exc
+
+    urls = [
+        urljoin(track.url, line.strip())
+        for line in playlist.splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    if not urls:
+        raise KinescopeError("в плейлисте субтитров нет ни одной ссылки на сегмент")
+
+    chunks = []
+    for u in urls:
+        try:
+            chunks.append(_get(u))
+        except Exception as exc:
+            raise KinescopeError(f"не скачался сегмент субтитров: {exc}") from exc
+
+    with open(dest, "wb") as fh:
+        fh.write(b"".join(chunks))
+    return dest
 
 
 #: Сколько тянуть одним запросом. Сервер обрывает длинную выдачу: на 121 МБ это не
