@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frameproof"
-version = "0.5.5"
+version = "0.5.6"
 description = "Агент смотрит видео без слепых зон и доказывает тайм-кодом, что именно он видел"
 readme = "README.md"
 requires-python = ">=3.10"

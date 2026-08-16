@@ -70,6 +70,7 @@ def cmd_index(args: argparse.Namespace) -> int:
         got = fetch(
             args.target, out_dir, max_height=args.max_height,
             want_audio=not (args.no_transcribe or transcript is not None),
+            cookies_from_browser=args.cookies_from_browser,
         )
         video_path, title, audio_path = got.video_path, got.title, got.audio_path
         if got.subtitle_path and transcript is None:
@@ -477,6 +478,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="не ставить кадры по указательным репликам («вот здесь», «смотрите»)")
     i.add_argument("--no-transcribe", action="store_true",
                    help="не расшифровывать, если нет субтитров")
+    from .fetch import БРАУЗЕРЫ_С_COOKIES  # локально: не тянуть fetch.py ради других команд
+
+    i.add_argument(
+        "--cookies-from-browser", metavar="БРАУЗЕР", default=None,
+        help="cookies живой сессии браузера — ДОСТУП К ВАШЕМУ АККАУНТУ YouTube, "
+             "не анонимная загрузка. Нужно только когда 403 держится на каждом "
+             "переспробованном формате (перебор форматов такое не лечит — это "
+             "YouTube просит авторизацию, а не режет конкретный формат). По "
+             "умолчанию выключено. Браузеры: " + ", ".join(БРАУЗЕРЫ_С_COOKIES),
+    )
     i.set_defaults(func=cmd_index)
 
     s = sub.add_parser("search", help="искать по речи и тексту с экрана (картинок не отдаёт)")
