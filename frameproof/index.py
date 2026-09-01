@@ -41,6 +41,42 @@ class Hit:
         return f"[{tc_short(self.t)} / {self.ref}] {self.kind}: {self.text}"
 
 
+
+def gaps_near_hits(index: dict, hits: list, *, near_sec: float = 180.0) -> dict:
+    """Какие участки без кадров стоят рядом с найденным.
+
+    Поиск отвечает на вопрос и молчит о том, где искать было НЕ ПО ЧЕМУ.
+    Человек получает совпадение на 12:30, отвечает уверенно, а на 15:00
+    двадцать минут без единого кадра, и там тот же разговор мог продолжиться
+    с другим ответом. Инструмент это знает: разрывы посчитаны при индексации
+    и лежат в coverage.gaps. Просто их никто не видит, потому что смотрят
+    в search, а покрытие печатает report.
+
+    Возвращает разрывы целиком и отдельно те, что ближе near_sec к любому
+    совпадению: близкий разрыв это не общая статистика, а прямая оговорка
+    к конкретному ответу.
+
+    Чистая функция: ничего не печатает, индекс не меняет.
+    """
+    разрывы = (index.get("coverage") or {}).get("gaps") or []
+    if not разрывы or not hits:
+        return {"all": разрывы, "near": [], "nearest_sec": None}
+
+    моменты = [h.t for h in hits]
+    рядом, ближайший = [], None
+    for g in разрывы:
+        a, b = float(g["from"]), float(g["to"])
+        # Расстояние от совпадения до разрыва: ноль, если совпадение внутри.
+        d = min(0.0 if a <= t <= b else min(abs(t - a), abs(t - b)) for t in моменты)
+        if ближайший is None or d < ближайший:
+            ближайший = d
+        if d <= near_sec:
+            рядом.append(dict(g, distance_sec=round(d, 1)))
+
+    рядом.sort(key=lambda g: g["distance_sec"])
+    return {"all": разрывы, "near": рядом,
+            "nearest_sec": None if ближайший is None else round(ближайший, 1)}
+
 def _fragment(source_url: str | None, t: float) -> str:
     """Ссылка на момент. YouTube понимает ?t=, локальный файл — #t=."""
     sec = int(t)

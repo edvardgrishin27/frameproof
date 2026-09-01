@@ -59,8 +59,28 @@ Silent blindness is worse than an honest "I did not look here".
 | command | what it does | images |
 |---|---|---|
 | `index` | builds the index, prints coverage | none |
-| `search` | searches speech **and on-screen text** | none |
+| `search` | searches speech **and on-screen text**, and names the gaps next to what it found | none |
 | `frames` | returns images | yes — the only one |
+
+
+### Search tells you where it could not look
+
+A hit is an answer. It is not the whole answer if part of the recording has no
+frames at all. `search` now ends with the gaps that sit near the hit:
+
+```
+[12:30 / seg#1] speech: цена подписки двадцать долларов
+
+1 совпадений. Ни одной картинки не загружено.
+
+⚠ рядом с найденным 1 участок без кадров: 15:00–18:00
+  Ответ мог быть и там.
+```
+
+The gaps were always computed at index time; only `report` printed them, and nobody
+runs `report` before answering. The distance is measured to the nearest hit, so this
+is a caveat about YOUR answer, not general statistics: a gap forty minutes away from
+everything you found stays out of the way.
 
 If search could return pictures, the savings would vanish on the first query. A frame
 at 1280×720 costs about 1196 visual tokens; the transcript of an hour is about 50 KB.

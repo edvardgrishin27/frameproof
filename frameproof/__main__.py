@@ -208,7 +208,7 @@ def _local_transcript(source_path: str, out_dir: str, lang: str | None):
 
 
 def cmd_search(args: argparse.Namespace) -> int:
-    from .index import load_index, search
+    from .index import gaps_near_hits, load_index, search
 
     out_dir = args.out or _work_dir(args.query, None)
     if not os.path.exists(os.path.join(out_dir, "index.json")):
@@ -226,6 +226,23 @@ def cmd_search(args: argparse.Namespace) -> int:
         print(line if len(line) <= 200 else line[:197] + "...")
     print()
     print(f"{len(hits)} совпадений. Ни одной картинки не загружено.")
+
+    # Оговорка к ответу, а не общая статистика: где искать было НЕ ПО ЧЕМУ.
+    # Без неё человек отвечает уверенно, не зная, что рядом с найденным
+    # лежит участок без кадров, и там тот же разговор мог продолжиться.
+    дыры = gaps_near_hits(load_index(out_dir), hits)
+    if дыры["near"]:
+        сколько = len(дыры["near"])
+        слово = "участок" if сколько == 1 else "участка" if сколько < 5 else "участков"
+        print(f"\n⚠ рядом с найденным {сколько} {слово} без кадров: "
+              + ", ".join(g["tc"] for g in дыры["near"][:4])
+              + (f" и ещё {сколько - 4}" if сколько > 4 else ""))
+        print("  Ответ мог быть и там. Проверьте: frameproof report --out " + out_dir)
+    elif дыры["all"]:
+        print(f"\nВсего в записи {len(дыры['all'])} участ"
+              f"{'ок' if len(дыры['all']) == 1 else 'ка/ов'} без кадров, "
+              "но ближе трёх минут к находкам их нет.")
+
     print(f"Посмотреть момент: frameproof frames --at {tc_short(hits[0].t)} --out {out_dir}")
     return 0
 
