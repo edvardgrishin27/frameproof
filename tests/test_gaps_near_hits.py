@@ -119,3 +119,29 @@ def test_оговорка_доезжает_до_вывода_search(tmp_path):
     assert "без кадров" in r.stdout, "search промолчал про разрыв рядом с находкой"
     assert "15:00–18:00" in r.stdout
     assert "мог быть и там" in r.stdout
+
+
+def test_версия_одна_во_всех_трех_местах():
+    """Версия живёт в трёх файлах, и разъезжается любая пара.
+
+    Живой случай 0.6.0: подняли в pyproject, забыли в __init__ и в plugin.json.
+    uv ставил `frameproof==0.6.0`, `frameproof --version` отвечал 0.5.6, а плагин
+    Claude Code сообщал третье. Существующий тест сверял только __init__
+    с plugin.json, поэтому пару pyproject↔__init__ не ловил никто.
+    """
+    import json as _json
+    import re
+
+    import frameproof
+
+    манифест = open(os.path.join(КОРЕНЬ, "pyproject.toml"), encoding="utf-8").read()
+    m = re.search(r'(?m)^version = "([\d.]+)"', манифест)
+    assert m, "в pyproject.toml не нашлась строка version"
+
+    плагин = _json.load(open(os.path.join(КОРЕНЬ, ".claude-plugin", "plugin.json"),
+                             encoding="utf-8"))["version"]
+
+    источники = {"pyproject.toml": m.group(1),
+                 "frameproof/__init__.py": frameproof.__version__,
+                 "plugin.json": плагин}
+    assert len(set(источники.values())) == 1, "версии разъехались: %s" % источники
