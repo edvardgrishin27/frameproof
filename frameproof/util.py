@@ -67,6 +67,24 @@ def parse_tc(value: str) -> float:
     return total
 
 
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """Русская форма при числе: 1 кадр, 2 кадра, 5 кадров, 11 кадров.
+
+    Вывод читает человек, и «1 кадров» сразу выдаёт машину, которая не считает,
+    а склеивает строки. Правило стандартное: 11-14 всегда множественное,
+    дальше решает последняя цифра.
+    """
+    n = abs(int(n))
+    if 11 <= n % 100 <= 14:
+        return many
+    tail = n % 10
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
 _SLUG_STRIP = re.compile(r"[^\w\s-]", re.UNICODE)
 _SLUG_SPACE = re.compile(r"[\s_]+")
 

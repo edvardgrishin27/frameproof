@@ -22,7 +22,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from .util import parse_tc, tc_short
+from .util import parse_tc, plural, tc_short
 
 #: Насколько тайм-код в метке может расходиться с реальным моментом кадра.
 #: Кадры стоят не чаще чем раз в MIN_GAP=0.75 с, так что 2 с — это заведомо «тот же кадр».
@@ -296,7 +296,9 @@ def render(claims: list[Claim], *, index_dir: str = "") -> str:
     if remaining:
         lines += [
             "",
-            f"механика молчит по {remaining} утверждениям — их смысл она проверить не может.",
+            f"механика молчит по {remaining} "
+            f"{plural(remaining, 'утверждению', 'утверждениям', 'утверждениям')}: "
+            "смысл она проверить не может.",
             f"Слепой второй взгляд:  frameproof verify <файл> --out {index_dir or '<индекс>'} --plan",
         ]
     return "\n".join(lines)

@@ -1,0 +1,78 @@
+{
+  "duration": 2312.333333,
+  "runs": [
+    {
+      "name": "claude-video balanced (по умолчанию)",
+      "stats": {
+        "frames": 17,
+        "max_gap": 1251.92,
+        "blind_seconds": 2263.083333,
+        "blind_ratio": 0.9787011676486523,
+        "biggest": [
+          157.5,
+          1409.42
+        ],
+        "engine": "scene",
+        "fallback": false,
+        "candidates": 17,
+        "resolution": 512
+      },
+      "seconds": 51.626421213150024
+    },
+    {
+      "name": "claude-video efficient (по умолчанию)",
+      "stats": {
+        "frames": 50,
+        "max_gap": 352.4200000000001,
+        "blind_seconds": 1989.22,
+        "blind_ratio": 0.8602652444659457,
+        "biggest": [
+          1772.12,
+          2124.54
+        ],
+        "engine": "keyframe",
+        "fallback": false,
+        "candidates": 473,
+        "resolution": 512
+      },
+      "seconds": 1.4103648662567139
+    },
+    {
+      "name": "claude-video efficient без капа и дедупа",
+      "stats": {
+        "frames": 473,
+        "max_gap": 7.0,
+        "blind_seconds": 0,
+        "blind_ratio": 0.0,
+        "biggest": [
+          111.71,
+          118.71
+        ],
+        "engine": "keyframe",
+        "fallback": false,
+        "candidates": 473,
+        "resolution": 512
+      },
+      "seconds": 1.0927369594573975
+    },
+    {
+      "name": "frameproof",
+      "stats": {
+        "frames": 220,
+        "max_gap": 14.5,
+        "blind_seconds": 0,
+        "blind_ratio": 0.0,
+        "biggest": [
+          1697.75,
+          1712.25
+        ],
+        "coverage_complete": true,
+        "caught_changes": 105,
+        "safety_fills": 115,
+        "detect_seconds": 35.6,
+        "mode": "по умолчанию"
+      },
+      "seconds": 55.751708030700684
+    }
+  ]
+}

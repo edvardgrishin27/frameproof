@@ -5,8 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "frameproof"
 version = "0.6.1"
-description = "Агент смотрит видео без слепых зон и доказывает тайм-кодом, что именно он видел"
-readme = "README.md"
+description = "Your agent watches video with no blind spots and proves with a timecode what it actually saw"
+readme = "README.en.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Edvard Grishin" }]

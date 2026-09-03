@@ -1,252 +1,399 @@
+🇷🇺 Русский · [🇬🇧 English](README.en.md)
+
 # frameproof
 
-**Your coding agent did not watch that video. It guessed.**
+**Ваш агент не смотрел это видео. Он угадал. Здесь у каждого утверждения про экран есть тайм-код, который проверяет арифметика.**
 
-Ask Claude Code to "watch this tutorial" and it samples frames on a scene-change
-threshold. On a screencast that threshold cannot fire. A tool may warn that coverage is
-sparse, but it will not tell you WHERE the hole is — so the agent cannot tell "few frames"
-from "no frames for twenty minutes straight".
+[![версия](https://img.shields.io/badge/version-0.6.1-1f6feb)](pyproject.toml)
+[![тесты](https://img.shields.io/badge/tests-131-2ea043)](tests)
+[![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](#установка)
+[![зависимости](https://img.shields.io/badge/dependencies-numpy-8957e5)](pyproject.toml)
+[![API-ключи](https://img.shields.io/badge/API%20keys-none-555555)](#что-умеет)
+[![лицензия](https://img.shields.io/badge/license-MIT-97ca00)](LICENSE)
 
-Measured on a real 38-minute tutorial, the most popular tool in this niche extracted
-**17 frames by default**, with a **20-minute 51-second gap**. `frameproof` extracted 220
-with a **14-second** maximum gap — first command, no flags.
+131 тест · гарантия «без кадра не дольше 15 секунд» · ни одного API-ключа · точечный вопрос за 3 192 токена вместо 25 840.
 
-The full table, including their best mode where they lead on coverage, is in
-[bench/RESULTS.md](bench/RESULTS.md). Hiding it would be less interesting.
+## Как это устроено
 
-```bash
-pip install frameproof
-frameproof index "https://youtube.com/watch?v=..." --ocr
+```
+      ссылка или файл
+      YouTube · Loom · Kinescope · запись Zoom · локальный mp4
+               |
+               v
+  +--------------------------------------------------------------+
+  |  РАЗБОР                                                      |
+  |  кадры  доля изменившихся пикселей по ячейкам сетки,         |
+  |         каждая ячейка сравнивается со своим фоном            |
+  |  речь   субтитры через yt-dlp, если их нет - локальная       |
+  |         расшифровка (сеть и ключи не нужны)                  |
+  |  экран  OCR по отдельной крупной копии кадра,                |
+  |         копия удаляется сразу после распознавания            |
+  +--------------------------------------------------------------+
+               |
+               v
+  +--------------------------------------------------------------+
+  |  ГАРАНТИЯ ПОКРЫТИЯ   _fill_gaps() в select.py                |
+  |  детекторы молчат -> кадры досыпаются по сетке               |
+  |  ни один участок не остается без кадра дольше --max-gap      |
+  |  не вышло -> отчет называет адрес: БЕЗ КАДРА 25:30-25:59     |
+  +--------------------------------------------------------------+
+               |
+               v
+      ИНДЕКС   index.json + segments.jsonl + frames.jsonl
+      кадр <-> тайм-код <-> реплика,  поиск SQLite FTS5 (триграммы)
+               |
+      +--------+------------------+------------------+
+      |                           |                  |
+   search                      frames             verify
+   по речи И по тексту         картинки только    6 проверок
+   с экрана                    по --at / --ids    арифметикой,
+   БЕЗ единой картинки                            0 вызовов модели
 ```
 
-## Why the threshold cannot work
+Слепых зон нет не потому, что повезло с порогом, а потому, что покрытие досыпается
+механически. Картинки не отдаются по умолчанию: это разделение на уровне команд, а не
+совет в документации, поэтому счет за точечный вопрос падает в восемь раз.
 
-ffmpeg's `scene` filter measures the **mean** delta across the whole frame. Measured on
-ffmpeg 8.0.1 with real terminal colours (`#cccccc` on `#1e1e1e`, 640×360):
+## Проблема
 
-| what changed on screen | scene score | threshold 0.3 |
+Попросите агента «посмотри туториал» и он нарежет кадры по порогу смены сцен. На
+скринкасте этот порог сработать не может по устройству. Фильтр `scene` в ffmpeg меряет
+**среднюю** дельту по всему кадру: замер на ffmpeg 8.0.1 с реальными цветами терминала
+дает одной полной строке текста скор **0.0579 при пороге 0.3**, а настоящие глифы
+покрывают 10-15 % площади строки, то есть около **0.006**. Промах примерно в 40 раз.
+Понижать порог бесполезно: то, что вытянет скринкаст, взорвет динамичное видео тысячами
+кадров. Инструмент при этом может предупредить, что кадров мало, но не скажет, ГДЕ дыра,
+и агент не отличит «кадров немного» от «кадров нет двадцать минут подряд». Дальше он
+уверенно называет команду, которой на экране не было.
+
+## Что показал замер
+
+Ролик «HERMES AGENT 3.0», 38:32, скринкаст-гайд. Конкурент запускается **своим кодом**:
+`bench/claude-video` это клон их репозитория, коммит `83da59f`, вызываются их собственные
+`extract_scene_or_uniform` и `extract_keyframes`.
+
+| инструмент / режим | кадров | макс. разрыв | >30 с без кадра | время |
+|---|---|---|---|---|
+| claude-video `balanced` (по умолчанию) | 17 | **20:51** | 98 % | 48 с |
+| claude-video `efficient` (по умолчанию) | 50 | 5:52 | 86 % | 1 с |
+| claude-video `efficient` без капа и дедупа | 473 | **0:07** | 0 % | **1 с** |
+| **frameproof** (по умолчанию) | 228 | 0:14 | 0 % | 52 с |
+
+Третья строка это их победа, и она стоит здесь намеренно. Их же движок со снятым капом
+покрывает лучше нашего (7 секунд против 14) и делает это за секунду против наших
+пятидесяти двух. Разница только в одном: их 473 кадра надо выкрутить двумя флагами и
+знать, какими, а наш результат получается первой командой без флагов.
+
+По собранной с экрана информации тоже без победы, ничья: 789 надежных терминов против их
+814. Выигрываем мы в плотности и в цене за то же знание.
+
+| режим | кадров | надежных терминов | на кадр | «чистого» текста |
+|---|---|---|---|---|
+| claude-video `efficient` без капа | 473 | **814** | 1,7 | 77 % |
+| **frameproof** | 220 | 789 | **3,6** | **88 %** |
+
+Их кадры стоят на границах ключевых кадров кодировщика, наши там, где на экране
+дописалась мысль.
+
+Где разрыв действительно виден, так это в токенах. Кадр 512x288 стоит 209 токенов,
+1280x720 стоит 1196 (формула `ceil(w/28)*ceil(h/28)`).
+
+| | claude-video | frameproof |
 |---|---|---|
-| one full-width line of text | 0.0579 | no |
-| three lines | 0.149 | no |
-| half the screen | 0.745 | yes |
+| показать все кадры | 473 x 209 = 98 857 | 228 x 1196 = 272 688 |
+| точечный вопрос («какая команда на 4:12») | 25 840, фиксировано | **3 192** |
 
-Real glyphs cover 10–15 % of a line's area, so a typed command scores around **0.006 —
-off by a factor of about 40**. Lowering the threshold does not help: what rescues a
-screencast buries a fast-cut video under thousands of frames.
+`claude-video` печатает в контекст весь транскрипт и все кадры всегда, заплатить меньше
+нельзя. `frameproof` по умолчанию не отдает ни одной картинки: сначала поиск по речи и по
+тексту с экрана, кадр только по явному запросу. Точка безубыточности: мы дешевле, пока за
+сессию показано меньше примерно 20 кадров.
 
-`frameproof` measures the **fraction of changed pixels per grid cell**, calibrated
-against each cell's own baseline. A cell that moves constantly — the presenter's
-webcam, a running timer, a cursor — is suppressed automatically. A cell that is quiet
-most of the time and then changes is an event.
+Две сноски к таблицам выше, обе есть в [bench/RESULTS.md](bench/RESULTS.md).
 
-## The guarantee
+**Почему 228 в одной таблице и 220 в другой.** Это два разных прогона. Покрытие мерилось
+на текущем инструменте, который ставит якоря по речи, когда есть транскрипт, и дает 228
+кадров. OCR прогонялся раньше, по набору из 220 кадров, и делить его 789 терминов на
+нынешние 228 значило бы смешать два замера. Если переснять OCR по свежему набору,
+плотность станет 3,5 вместо 3,6, и вывод от этого не меняется.
 
-**No stretch of the timeline is left without a frame for longer than `--max-gap`
-seconds** (15 by default). When detectors stay silent, frames are placed on a grid.
-Coverage is not a matter of picking a lucky threshold.
+**Колонка «время» справочная.** Сохраненный прогон в `bench/hermes.json` дает 51,6 и 55,8
+секунды там, где в таблице стоят 48 и 52: время зависит от машины и ее загрузки и день в
+день не повторяется. Воспроизводятся кадры и разрывы, мерить надо их.
 
-And when the guarantee cannot be met, the tool **says so**:
+Полный метод и все оговорки: [bench/RESULTS.md](bench/RESULTS.md).
+
+## Кому подходит
+
+**Разработчику, который учится по чужому туториалу.**
+Агент называет команду, которой на экране не было, а проверить нечем: ссылки на момент
+нет, пересматривать 40 минут ради одной строки дороже, чем сделать самому. Здесь каждое
+утверждение про экран несет метку `[MM:SS / fNNNN]`, и `frameproof verify` проверяет ее
+арифметикой, включая случай «кадр в индексе есть, но агенту его ни разу не выдавали».
+
+**Автору обзоров и новостей про ИИ.**
+Чтобы сослаться на чужой ролик, надо отсмотреть его целиком и выписать тайм-коды руками.
+Пересказ по транскрипту врет ровно там, где интересно: цифры, интерфейс и код на экране
+проговариваются вслух не всегда. Поиск идет по речи И по тексту с экрана, кадр грузится
+только под конкретный момент.
+
+**Тому, кто учится по курсам на Kinescope.**
+`yt-dlp` этот хост не берет, заявка на экстрактор открыта с 2022 года. Подсунуть манифест
+напрямую не помогает: 1243 псевдосегмента байтовыми диапазонами указывают на один файл, и
+`yt-dlp` оценивает 82-минутную лекцию в 96 ГиБ вместо настоящих 121 МБ. Здесь загрузка
+своя: сервер отдает любой запрошенный диапазон, файл берется кусками по 32 МБ с докачкой.
+Сквозной прогон на той самой лекции: 497 кадров, покрытие 100 %.
+
+**Тому, кто делает конспекты созвонов.**
+Запись Zoom под NDA нельзя грузить в Groq или OpenAI, а именно туда конкуренты отправляют
+аудио. И в созвоне важен не только звук: демо экрана, таблица, диаграмма, то, что
+показали и не проговорили. Ни одного API-ключа: после `index` команды `search` и `frames`
+работают с отключенной сетью.
+
+**Саппорту и QA, которым клиент прислал запись экрана с багом.**
+Двадцать минут скринкаста и «оно упало где-то тут». Порог сцен здесь не срабатывает в
+принципе, автоматика отдает три кадра из интро и аутро. Здесь появившаяся строка
+терминала уверенно перекрывает порог, а вечно шевелящаяся вебкамера гасится маской шума.
+
+**Техническому писателю, которому нужны скриншоты из чужого демо.**
+Кадр берется ПОСЛЕ того, как картинка успокоилась (порог тишины 0.004): на слайде и в
+терминале именно последний кадр всплеска несет максимум набранного текста. Отсюда 3,6
+надежного термина на кадр против 1,7 и 88 % «чистого» текста против 77 %.
+
+**Редактору, комплаенсу или заказчику, который проверяет чужой разбор.**
+Разбор от модели выглядит одинаково убедительно и когда он верен, и когда выдуман.
+Здесь два слоя проверки: механический `verify` и отдельный слепой субагент, который видит
+только кадр и утверждение и пытается его опровергнуть.
+
+## Установка
+
+```bash
+pip install "frameproof[net]"                              # ядро + yt-dlp для ссылок
+frameproof index "https://youtube.com/watch?v=..." --ocr   # индекс, покрытие, ни одной картинки
+frameproof install                                         # поставить скилл в Claude Code
+```
+
+Нужен `ffmpeg`. Все остальное необязательно и деградирует мягко: `frameproof doctor`
+скажет, что есть, а чего нет. Ключей не нужно нигде.
+
+**Про `--ocr` в первой же команде.** На маке встроенное распознавание собирается через
+`swiftc`, а он приходит с Xcode Command Line Tools (`frameproof/ocr.py`). Нет их, поставьте
+`xcode-select --install`. Без них команда не падает: индекс строится, покрытие считается,
+поиск по речи работает, а в stderr появляется строка `OCR пропущен: не найден swiftc
+(нужны Xcode Command Line Tools)` и поиска по тексту с экрана не будет. Не на маке
+распознавание подключается своим движком, см. «Kinescope и работа вне мака».
+
+## Использование в Claude Code
+
+`frameproof install` кладет скилл и слепого субагента в `~/.claude`. Отдельных команд
+после этого учить не надо, агенту пишется обычная просьба:
+
+> посмотри https://youtube.com/watch?v=... и скажи, какую команду он показывает на 4:12
+
+> разбери эту запись созвона и собери конспект с тайм-кодами
+
+> в какой момент он говорит про память агента и что при этом на экране
+
+Скилл сам зовет `index`, первым делом читает отчет покрытия, ищет по речи и по тексту с
+экрана и грузит кадр только под названный момент. Главное правило прошито в самом скилле,
+и обойти его агент не может:
+
+> **Никогда не утверждай, что было на экране, если не видел кадра.** Если в отчете есть
+> участок «БЕЗ КАДРА», про этот промежуток говори прямо: кадра здесь нет, по звуку вот
+> что. Каждое утверждение про экран идет с меткой `[MM:SS / fNNNN]`, и это не оформление:
+> `frameproof verify` проверяет каждую такую метку по индексу.
+
+Проверить разбор, свой или чужой:
+
+```bash
+frameproof verify разбор.md --out ~/.frameproof/hermes
+```
+
+Вне Claude Code скилл ставится через `npx skills add edvardgrishin27/frameproof -g`.
+Формат `SKILL.md` переносим и манифесты на месте, но вживую мы это не гоняли, см.
+«Честные границы».
+
+## Что печатают три команды
+
+**`index` печатает отчет покрытия и ни одной картинки.** Если гарантия «без кадра не
+дольше `--max-gap`» где-то не выдержана, отчет называет адрес, а не абстрактный процент:
 
 ```
 покрытие: 97 % — 2 участка без кадров (57 с). НЕ утверждай, что показано на экране в них.
     БЕЗ КАДРА  25:30 – 25:59   (29 с)
 ```
 
-Silent blindness is worse than an honest "I did not look here".
-
-## Three commands, on purpose
-
-| command | what it does | images |
-|---|---|---|
-| `index` | builds the index, prints coverage | none |
-| `search` | searches speech **and on-screen text**, and names the gaps next to what it found | none |
-| `frames` | returns images | yes — the only one |
-
-
-### Search tells you where it could not look
-
-A hit is an answer. It is not the whole answer if part of the recording has no
-frames at all. `search` now ends with the gaps that sit near the hit:
+**`search` ищет по речи И по тексту с экрана**, тоже без картинок, и в конце называет
+разрывы, которые лежат рядом с найденным:
 
 ```
 [12:30 / seg#1] speech: цена подписки двадцать долларов
 
-1 совпадений. Ни одной картинки не загружено.
+1 совпадение. Ни одной картинки не загружено.
 
 ⚠ рядом с найденным 1 участок без кадров: 15:00–18:00
-  Ответ мог быть и там.
+  Ответ мог быть и там. Проверьте: frameproof report --out ~/.frameproof/hermes
+Посмотреть момент: frameproof frames --at 12:30 --out ~/.frameproof/hermes
 ```
 
-The gaps were always computed at index time; only `report` printed them, and nobody
-runs `report` before answering. The distance is measured to the nearest hit, so this
-is a caveat about YOUR answer, not general statistics: a gap forty minutes away from
-everything you found stays out of the way.
+**`frames` единственная команда, которая отдает изображения**, и только под названный
+момент или id:
 
-If search could return pictures, the savings would vanish on the first query. A frame
-at 1280×720 costs about 1196 visual tokens; the transcript of an hour is about 50 KB.
-Most questions are answered without loading a single image.
+```
+[18:38 / f0097] ~/.frameproof/hermes/frames/f0097.jpg  (1196 токенов)
+
+1 кадр, примерно 1196 визуальных токенов.
+Показывай их модели и цитируй меткой [MM:SS / fNNNN].
+```
+
+## Проверка утверждений
+
+Метка `[18:38 / f0097]` это ссылка на строку индекса, и ее проверяет арифметика:
 
 ```bash
-frameproof search "openrouter" --out ~/.frameproof/hermes
-# [9:57 / f0050] screen: ... OpenRouter • дешевле напрямую ...
-
-frameproof frames --at 18:38 --out ~/.frameproof/hermes
-# [18:38 / f0097] .../frames/f0097.jpg  (1196 токенов)
-```
-
-## Two speed tiers
-
-```bash
-frameproof index <url> --fast     # 1 second
-frameproof index <url>            # 32 seconds, frames land better
-```
-
-`--fast` takes candidates from keyframes instead of decoding the whole video.
-Measured on a 38-minute tutorial:
-
-| mode | frames | reliable on-screen terms | per frame | time |
-|---|---|---|---|---|
-| `--fast` | 231 | 672 | 2.9 | **1.1 s** |
-| default | 225 | **789** | **3.5** | 32 s |
-
-The fast tier returns 85 % of the information for 3 % of the time. The trade is honest:
-frames land where the encoder put a keyframe, not where the thought on screen finished.
-
-The frame budget scales with duration instead of being a constant: a one-minute clip
-gets 40, a 38-minute tutorial 231, a three-hour lecture 600.
-
-
-## A citation you can check
-
-`[18:38 / f0097]` is not decoration. It points at a row of the index, and arithmetic checks it:
-
-```bash
-frameproof verify answer.md --out ~/.frameproof/hermes
+frameproof verify разбор.md --out ~/.frameproof/hermes
 ```
 
 ```
-✗ [20:00 / f9999] The memory architecture diagram is on screen.
-      FAIL  FRAME_NOT_FOUND: no frame f9999 in the index — the reference is invented
-✗ [5:00 / f0097] Here he opens the router settings.
-      FAIL  TIME_MISMATCH: the tag says 5:00, frame f0097 was taken at 18:38
-?  [29:31 / f0160] A list of ten skills is shown.
-      WARN  NEVER_OPENED: the frame exists but was never requested —
-            the claim was made without looking
+АУДИТ УТВЕРЖДЕНИЙ
+─────────────────
+✗ [20:00 / f9999] На экране итоговая схема памяти агента.
+      FAIL  FRAME_NOT_FOUND: кадра f9999 в индексе нет — ссылка выдумана
+✗ [5:00 / f0097] Здесь он открывает настройки роутера.
+      FAIL  TIME_MISMATCH: метка говорит 5:00, а кадр f0097 снят в 18:38
+? [29:31 / f0160] Показан список из десяти навыков.
+      WARN  NEVER_OPENED: кадр f0160 существует, но ни разу не запрашивался — утверждение сделано, не посмотрев
+
+утверждений: 3   провалов: 2   вопросов: 1
+Провалы — это сломанная ссылка, а не спорное мнение. Их надо чинить.
+Вопросы — повод посмотреть кадр глазами, а не приговор.
+
+механика молчит по 1 утверждению: смысл она проверить не может.
+Слепой второй взгляд:  frameproof verify <файл> --out ~/.frameproof/hermes --plan
 ```
 
-Six checks, zero model calls: does the frame exist · does the timestamp match · does the
-moment fall in a coverage gap · **was the frame ever served to the agent** · does the quoted
-string appear in the frame's OCR · does it appear in nearby speech.
+Шесть проверок и ни одного обращения к модели. `NEVER_OPENED` возможен только потому, что
+выдача и индексация разведены: `_log_served()` дописывает id каждого показанного кадра в
+`served.jsonl`. Инструмент, который вываливает все кадры в контекст по умолчанию, такого
+про себя знать не может.
 
-## A blind second look
+## Kinescope и работа вне мака
 
-Meaning is beyond arithmetic. For that there is a separate subagent that sees **only the
-frame and the claim** — not the user's question, not the author's reasoning, not the rest
-of the answer. Its job is to refute.
-
-```bash
-frameproof verify answer.md --out <index> --plan   # tasks carrying no context at all
-```
-
-It runs **only when explicitly asked**. Refuted claims are **flagged, not hidden**: measured
-adversarial panels raise false alarms on up to a third of correct claims, so the call stays
-with the human.
-
-
-## Install
-
-```bash
-pip install frameproof          # core
-pip install "frameproof[net]"   # + yt-dlp for links
-pip install "frameproof[mlx]"   # + fast local transcription on Apple Silicon
-
-frameproof doctor               # check what is available
-frameproof install              # install the skill into Claude Code
-```
-
-```bash
-npx skills add edvardgrishin27/frameproof -g   # Codex, Cursor, Copilot, others
-```
-
-> We have **not** verified this outside Claude Code. The `SKILL.md` format is portable and
-> the manifests are in place, but we will not claim support we did not test — see [CLAIMS.md](CLAIMS.md).
-
-Requires `ffmpeg`. Everything else is optional and degrades gracefully.
-**No API keys, ever.** Subtitles come free from `yt-dlp`; when there are none,
-transcription runs locally.
-
-## Kinescope
-
-A Russian video host carrying courses and webinars. `yt-dlp` cannot fetch it: the
-extractor request has been open since 2022 and the page returns "Unsupported URL".
-Handing it the manifest directly does not help either — it lists the formats but
-downloads the wrong thing: 1243 "segments" point at one file through byte ranges, and
-the downloader ignores the ranges. Measured on an 82-minute lecture: `yt-dlp` estimated
-**96 GiB** for a video that weighs **121 MB**
-([yt-dlp#12687](https://github.com/yt-dlp/yt-dlp/issues/12687)).
-
-So the fetch is our own, and it is simpler: the server honours any range asked of it,
-so the whole file is addressable directly instead of through 1243 pseudo-segments.
+`yt-dlp` этот хост не берет, поэтому загрузка здесь своя: сервер отдает любой запрошенный
+диапазон, файл качается кусками по 32 МБ с докачкой.
 
 ```bash
 frameproof index "https://kinescope.io/embed/<id>" --ocr
 ```
 
-Some videos are behind a signed link: without `expires` and `sign` the manifest returns
-403, in DASH and HLS alike. Pass the URL whole, parameters included; if it has none, they
-are looked up on the player page. Downloads run in chunks with resume — the server drops
-a single large request, and a partial file survives both the drop and a restart.
+Ссылку передавайте целиком, вместе с параметрами `expires` и `sign`, если они есть: без
+них подписанный манифест отвечает 403 и в DASH, и в HLS. Если параметров нет, они ищутся
+на странице плеера. Видео с шифрованием ClearKey инструмент отказывается брать вслух, а
+не докачивает наполовину: для расшифровки нужен `mp4decrypt` из Bento4, отдельный бинарник,
+которого мы не поставляем.
 
-Audio sits in the manifest under a different shape — `BaseURL` pointing straight at
-the file plus byte ranges — and is fetched alongside the video. DASH carries no
-subtitles, but for some videos a ready track exists in the HLS manifest of the same
-video: when one is found it is used and the audio is not downloaded at all.
-Auto-generated tracks are flagged as such — the host serves ASR, and ASR is wrong
-sometimes.
-
-ClearKey-encrypted videos are refused out loud rather than half downloaded: decryption
-needs `mp4decrypt` from Bento4, a separate binary we do not ship.
-
-## Off the Mac
-
-Two places grew up on a MacBook: text recognition went through Apple Vision, and local
-transcription through mlx-whisper on Apple Silicon. Both doors now open outward, with
-the core untouched.
+Два места выросли на маке: распознавание текста шло через Apple Vision, локальная
+расшифровка через mlx-whisper на Apple Silicon. Обе двери открыты наружу, ядро при этом
+не меняется:
 
 ```bash
-# your own recognizer: takes image paths, prints "path<TAB>text"
+# свой распознаватель: получает пути к картинкам, печатает "путь<TAB>текст"
 frameproof index video.mp4 --ocr --ocr-command "python ocr_windows.py"
 
-# your own subtitles instead of transcription — .vtt, .srt or .json3
-frameproof index video.mp4 --subs speech.srt
+# готовые субтитры вместо расшифровки: .vtt, .srt или .json3
+frameproof index video.mp4 --subs речь.srt
 ```
 
-`--ocr-command` is the same contract the internal Swift binary already speaks, simply
-exposed. On Windows 10 and 11 the built-in offline `Windows.Media.Ocr` fits it directly:
-no keys, no install. Reply in UTF-8; a system-ANSI reply is accepted too, but UTF-8 is
-the contract.
+`--ocr-command` это тот же договор, по которому работает внутренний свифтовый бинарник,
+просто вынесенный наружу. Под него без переделок ложится встроенный офлайновый
+`Windows.Media.Ocr` в Windows 10 и 11: ни ключей, ни установки. Отвечать надо в UTF-8,
+системная ANSI-кодировка тоже принимается, но договор это UTF-8.
 
-On resolution. Display frames are scaled down to `--width` (1280 is a token-cost
-decision), and small interface text does not survive that: the same frame of a GitHub
-page yielded one word at 1280 and full filenames and commit lines at 2560. Recognition
-therefore runs on a separate full-resolution copy that is deleted right after, controlled
-by `--ocr-width`. What you show stays cheap.
+## Что умеет
 
-## Use in Claude Code
+**Покрытие с гарантией, а не с надеждой на порог.** `_fill_gaps()` в `select.py` досыпает
+кадры по сетке в любой промежуток длиннее `--max-gap` (по умолчанию 15 секунд).
+Прореживание под потолок кадров эту гарантию порвать не может физически: в `_thin()` кадр,
+чье удаление дает разрыв больше допустимого, пропускается через `continue` и не
+рассматривается вообще. Если под потолок так не ужаться, отчет говорит «получил больше,
+чем просил, и вот почему», вместо того чтобы молча ослепнуть.
 
-After `frameproof install`, just ask: *"watch this video and tell me which command he
-shows at 4:12"*. The skill enforces one rule the agent cannot skip:
+**Адрес дыры рядом с ответом, а не абстрактный процент.** `gaps_near_hits()` считает
+расстояние от каждого разрыва до ближайшего совпадения и печатает оговорку прямо в выводе
+`search`: «рядом с найденным 1 участок без кадров: 15:00-18:00. Ответ мог быть и там».
+Разрыв в сорока минутах от всего найденного молчит: это оговорка к КОНКРЕТНОМУ ответу.
 
-> Never claim what was on screen without having seen a frame. Every statement about
-> the screen carries a `[MM:SS / fNNNN]` tag so a human can check it.
+**Поиск по речи и по тексту с экрана.** SQLite FTS5 с токенайзером trigram: русские падежи
+снимаются сами, `памят` находит и «память», и «памяти». Векторный индекс не нужен,
+транскрипт часа это около 50 КБ, а раскладка индекса сделана под `grep`, а не под парсинг.
 
-## Honest limits
+**OCR по крупной копии, показ по дешевой.** Кадры показа ужимаются до 1280 px (это решение
+про цену токенов), и мелкий интерфейс на них не читается. Поэтому распознавание идет по
+отдельной полноразмерной копии в `--ocr-width`, которая удаляется сразу. Разница измерена
+на кадре страницы GitHub: одно слово при 1280 против полных имен файлов и строк коммитов
+при 2560.
 
-The full list is in [CLAIMS.md](CLAIMS.md). The short version: this tool guarantees
-*coverage*, not that no change was ever missed; OCR is for **finding** frames, not for
-reading code verbatim; and the benchmark is one video of the class where the gap is
-widest.
+**Проверка утверждений арифметикой.** Шесть проверок, ни одного обращения к модели:
+существует ли кадр, совпадает ли тайм-код, не попал ли момент в участок без кадров, есть
+ли процитированная строка в тексте кадра и в речи рядом, и отдельно `NEVER_OPENED`: кадр в
+индексе есть, а агенту его ни разу не показывали. `_log_served()` дописывает id каждого
+выданного кадра в `served.jsonl`, поэтому «утверждал не глядя» ловится журналом, а не
+догадкой.
 
-Russian documentation: [README.ru.md](README.ru.md)
+**Слепой второй взгляд.** Агент `frameproof-adversary` объявлен с `tools: Read` и видит
+только путь к кадру и текст утверждения: ни вопроса пользователя, ни рассуждений автора,
+ни соседних утверждений. Запускается только по явной просьбе, опровергнутое помечается,
+а не удаляется.
 
-MIT
+**Работа офлайн.** Субтитры берутся бесплатно через yt-dlp, при их отсутствии расшифровка
+идет локально, для локального файла сеть не нужна вообще. Это проверяемое свойство:
+выдерните сеть после `index` и запустите `search`.
+
+**Два тира скорости.** `--fast` берет кандидатов из ключевых кадров и не декодирует ролик
+целиком: 1,1 секунды против 32 и 85 % информации.
+
+## Честные границы
+
+Полный список с командами для проверки лежит в [CLAIMS.md](CLAIMS.md). Коротко и без
+смягчений:
+
+- **Один автор и 24 звезды** против 16 696 у claude-video, 2 114 у claude-real-video и 330
+  у watch-skill. В списке контрибьюторов один человек. У соседей уже есть форки, плагины в
+  маркетплейсе и сторонние сборки под Windows.
+- **Замер это ОДИН ролик** и притом самого выгодного нам класса: скринкаст-гайд, где
+  разрыв максимален по определению. На смонтированном видео с частыми склейками порог
+  сработает нормально и разница схлопнется. Мы этого не измеряли.
+- **Их лучший режим выигрывает у нас по покрытию:** 0:07 против 0:14 за 1 секунду против
+  52. Наше преимущество формулируется узко: их результат надо выкрутить флагами.
+- **По объему снятой с экрана информации ничья,** а не победа: 789 против 814. Выигрываем
+  в плотности, то есть в цене за то же знание.
+- **Дефолт медленный:** 32-52 секунды против 1 секунды у конкурента.
+- **По токенам мы дешевле только до примерно 20 показанных кадров за сессию.** Кто честно
+  листает все видео целиком, у нас заплатит больше. Упаковки кадров в контактный лист,
+  которой соседи закрывают ровно этот сценарий, в командах нет: функция `contact_sheet()`
+  в `extract.py` написана, но к CLI не подключена, проверяется через
+  `grep -rn contact_sheet`. Своего замера экономии от нее у нас нет, поэтому и цифры тут
+  никакой не будет.
+- **Работа вне Claude Code не проверена.** Формат `SKILL.md` переносим, манифесты на месте,
+  `npx skills add edvardgrishin27/frameproof -g` в документации есть, но ни Codex, ни
+  Cursor, ни Copilot мы вживую не гоняли и поддержку не заявляем.
+- **Инструмент вырос на макбуке.** OCR шел через Apple Vision, локальная расшифровка через
+  mlx-whisper на Apple Silicon. Двери наружу открыты (`--ocr-command`, `--subs`), под
+  договор укладывается встроенный `Windows.Media.Ocr`, но проверял это посторонний человек
+  в переписке, а не наш CI.
+- **Kinescope держится на одном публичном ролике** без шифрования и без подписи. Загрузка
+  кусками на ПОДПИСАННОЙ ссылке вживую не проверена: своего закрытого ролика у нас нет.
+  Видео с шифрованием ClearKey не тянем принципиально, нужен `mp4decrypt` из Bento4,
+  который через pip не ставится.
+- **Слепой проверяющий шумит:** измеренные состязательные панели поднимают ложную тревогу
+  на трети верных утверждений. Поэтому он не запускается сам и не удаляет опровергнутое.
+  Продавать его как «автопроверку» нельзя.
+- **Ниша узкая по замыслу.** Диаризация говорящих, окно `--from/--to` внутри длинного
+  созвона, живые стримы, MCP-сервер, REST, адаптеры к LangChain и CrewAI, веб-интерфейс:
+  этого у нас нет, а у соседей есть. Мы это три команды в терминале.
+- **Вывод CLI и внутренняя документация на русском** («покрытие: 97 %», «кадров не
+  нашлось»). Для русскоязычной аудитории это плюс, для англоязычной трение, о котором
+  лучше сказать самим.
+
+## Лицензия
+
+MIT, см. [LICENSE](LICENSE).

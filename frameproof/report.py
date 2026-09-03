@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .budget import DEFAULT_FRAMES_PER_CALL, effective_tokens
 from .select import Selection
-from .util import tc_short
+from .util import plural, tc_short
 
 
 def coverage_lines(sel: Selection, *, frame_w: int = 0, frame_h: int = 0) -> list[str]:
@@ -38,7 +38,7 @@ def coverage_lines(sel: Selection, *, frame_w: int = 0, frame_h: int = 0) -> lis
         uncovered = sum(b - a for a, b in sel.gaps)
         lines.append(
             f"покрытие: {sel.coverage * 100:.0f} % — "
-            f"{len(sel.gaps)} участ{'ок' if len(sel.gaps) == 1 else 'ка/ов'} "
+            f"{len(sel.gaps)} {plural(len(sel.gaps), 'участок', 'участка', 'участков')} "
             f"без кадров ({uncovered:.0f} с). НЕ утверждай, что показано на экране в них."
         )
         for a, b in sel.gaps[:8]:

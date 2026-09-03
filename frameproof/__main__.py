@@ -18,7 +18,7 @@ import os
 import sys
 
 from . import __version__
-from .util import parse_tc, slugify, tc_short
+from .util import parse_tc, plural, slugify, tc_short
 
 
 def _work_dir(target: str, explicit: str | None) -> str:
@@ -119,7 +119,8 @@ def cmd_index(args: argparse.Namespace) -> int:
     sel = select_frames(
         sig, info.duration, max_gap=args.max_gap, cap=args.max_frames, cues=cues
     )
-    print(f"извлекаю {len(sel.picks)} кадров...", file=sys.stderr)
+    print(f"извлекаю {len(sel.picks)} "
+          f"{plural(len(sel.picks), 'кадр', 'кадра', 'кадров')}...", file=sys.stderr)
     frames = extract(info, sel.picks, os.path.join(out_dir, "frames"), width=args.width)
 
     if args.ocr:
@@ -161,7 +162,9 @@ def cmd_index(args: argparse.Namespace) -> int:
             if big_dir:
                 shutil.rmtree(big_dir, ignore_errors=True)
         if hits:
-            print(f"текст найден на {hits} кадрах — теперь экран грепается", file=sys.stderr)
+            print(f"текст найден на {hits} "
+                  f"{plural(hits, 'кадре', 'кадрах', 'кадрах')} — теперь экран грепается",
+                  file=sys.stderr)
         elif not ocr_mod.available(args.ocr_command):
             where = args.ocr_command or "swiftc (нужны Xcode Command Line Tools)"
             print(f"OCR пропущен: не найден {where}", file=sys.stderr)
@@ -225,7 +228,8 @@ def cmd_search(args: argparse.Namespace) -> int:
         line = h.line()
         print(line if len(line) <= 200 else line[:197] + "...")
     print()
-    print(f"{len(hits)} совпадений. Ни одной картинки не загружено.")
+    print(f"{len(hits)} {plural(len(hits), 'совпадение', 'совпадения', 'совпадений')}. "
+          "Ни одной картинки не загружено.")
 
     # Оговорка к ответу, а не общая статистика: где искать было НЕ ПО ЧЕМУ.
     # Без неё человек отвечает уверенно, не зная, что рядом с найденным
@@ -233,14 +237,15 @@ def cmd_search(args: argparse.Namespace) -> int:
     дыры = gaps_near_hits(load_index(out_dir), hits)
     if дыры["near"]:
         сколько = len(дыры["near"])
-        слово = "участок" if сколько == 1 else "участка" if сколько < 5 else "участков"
+        слово = plural(сколько, "участок", "участка", "участков")
         print(f"\n⚠ рядом с найденным {сколько} {слово} без кадров: "
               + ", ".join(g["tc"] for g in дыры["near"][:4])
               + (f" и ещё {сколько - 4}" if сколько > 4 else ""))
         print("  Ответ мог быть и там. Проверьте: frameproof report --out " + out_dir)
     elif дыры["all"]:
-        print(f"\nВсего в записи {len(дыры['all'])} участ"
-              f"{'ок' if len(дыры['all']) == 1 else 'ка/ов'} без кадров, "
+        всего = len(дыры["all"])
+        print(f"\nВсего в записи {всего} "
+              f"{plural(всего, 'участок', 'участка', 'участков')} без кадров, "
               "но ближе трёх минут к находкам их нет.")
 
     print(f"Посмотреть момент: frameproof frames --at {tc_short(hits[0].t)} --out {out_dir}")
@@ -279,7 +284,8 @@ def cmd_frames(args: argparse.Namespace) -> int:
             print(f"    уже разобран: {r['caption']}")
     total = sum(r["est_tokens"] for r in rows)
     print()
-    print(f"{len(rows)} кадров, примерно {total} визуальных токенов.")
+    print(f"{len(rows)} {plural(len(rows), 'кадр', 'кадра', 'кадров')}, "
+          f"примерно {total} {plural(total, 'визуальный токен', 'визуальных токена', 'визуальных токенов')}.")
     print("Показывай их модели и цитируй меткой [MM:SS / fNNNN].")
     return 0
 
@@ -364,7 +370,9 @@ def cmd_report(args: argparse.Namespace) -> int:
         for g in cov["gaps"]:
             print(f"    {g['tc']}   НЕ утверждай, что было на экране здесь")
     t = idx["transcript"]
-    print(f"ТРАНСКРИПТ: {t['segment_count']} реплик, источник {t['source']}, язык {t['language']}")
+    print(f"ТРАНСКРИПТ: {t['segment_count']} "
+          f"{plural(t['segment_count'], 'реплика', 'реплики', 'реплик')}, "
+          f"источник {t['source']}, язык {t['language']}")
     return 0
 
 
