@@ -1,5 +1,7 @@
 [🇷🇺 Русский](README.md) · 🇬🇧 English
 
+![frameproof: one timeline has a twenty-minute hole, the other has none](https://raw.githubusercontent.com/edvardgrishin27/frameproof/main/docs/og.png)
+
 # frameproof
 
 **Your coding agent did not watch that video. It guessed.**
