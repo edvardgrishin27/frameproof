@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -86,6 +87,24 @@ def _fragment(source_url: str | None, t: float) -> str:
     return f"{source_url or ''}#t={sec}"
 
 
+
+def build_fingerprint(*, duration: float, frame_count: int, source: str) -> str:
+    """Короткий отпечаток сборки индекса.
+
+    Зачем. Идентификатор кадра — порядковый номер ВНУТРИ сборки (`f0084`), и при
+    пересборке с другими параметрами тот же номер указывает на другой момент.
+    Отзыв с живого использования: индекс на 97 кадров дал `f0084 = 13:27`,
+    индекс на 150 кадров — `f0084 = 5:16`. Разбор, написанный по первому,
+    после пересборки показывает не туда, а `verify` называл это TIME_MISMATCH,
+    то есть фактически обвинял автора во лжи.
+
+    Отпечаток даёт `verify` возможность сказать правду: разбор писался по другой
+    сборке. Берём то, что задаёт нарезку: длительность, число кадров и источник.
+    """
+    сырьё = f"{duration:.3f}|{frame_count}|{os.path.basename(source or '')}"
+    return "idx_" + hashlib.sha256(сырьё.encode("utf-8")).hexdigest()[:8]
+
+
 def write(
     out_dir: str,
     *,
@@ -148,6 +167,8 @@ def write(
 
     index = {
         "schema_version": SCHEMA_VERSION,
+        "index_id": build_fingerprint(
+            duration=info.duration, frame_count=len(frames), source=source_url or title or ""),
         "video": {
             "title": title,
             "source_url": source_url,

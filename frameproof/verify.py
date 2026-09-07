@@ -140,6 +140,21 @@ def _logical_lines(answer: str) -> list[tuple[int, str]]:
     return [(n, text) for n, text in out if text.strip()]
 
 
+#: Метка сборки в разборе: строка «Индекс: idx_xxxxxxxx» где угодно в тексте.
+#: Скилл ставит её в шапку, но искать по всему тексту дешевле, чем требовать место.
+_МЕТКА_ИНДЕКСА = re.compile(r"\b(idx_[0-9a-f]{8})\b")
+
+
+def extract_index_id(text: str) -> str | None:
+    """Отпечаток сборки, по которой писался разбор, если автор его указал.
+
+    Старые разборы метки не несут, и это не ошибка: возвращаем None и проверяем
+    всё остальное как раньше.
+    """
+    m = _МЕТКА_ИНДЕКСА.search(text or "")
+    return m.group(1) if m else None
+
+
 def extract_claims(answer: str) -> list[Claim]:
     """Достаёт утверждения из разбора по обязательным меткам."""
     claims: list[Claim] = []
@@ -190,7 +205,21 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
     served = {r["id"] for r in _load_jsonl(os.path.join(index_dir, "served.jsonl"))}
     gaps = index.get("coverage", {}).get("gaps", [])
 
+    # Сборку разбора сверяем ДО остальных проверок: если она чужая, номера кадров
+    # указывают в другие моменты, и все TIME_MISMATCH ниже — следствие, а не причина.
+    заявленный = extract_index_id(answer)
+    текущий = index.get("index_id")
+    чужой_индекс = bool(заявленный and текущий and заявленный != текущий)
+
     claims = extract_claims(answer)
+    if чужой_индекс and claims:
+        claims[0].findings.append(Finding(
+            "INDEX_MISMATCH", FAIL,
+            f"разбор писался по сборке {заявленный}, а проверяется против {текущий}. "
+            f"Номера кадров в разных сборках указывают на разные моменты, поэтому "
+            f"расхождения времени ниже ожидаемы. Пересоберите разбор или возьмите "
+            f"ту сборку индекса, по которой он написан",
+        ))
     for c in claims:
         frame = frames.get(c.frame_id) if c.frame_id else None
 
@@ -201,10 +230,12 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
             ))
 
         if frame is not None and abs(frame["t"] - c.t) > TIME_TOLERANCE:
+            хвост = (" — но индекс другой, см. INDEX_MISMATCH выше"
+                     if чужой_индекс else "")
             c.findings.append(Finding(
-                "TIME_MISMATCH", FAIL,
+                "TIME_MISMATCH", WARN if чужой_индекс else FAIL,
                 f"метка говорит {tc_short(c.t)}, а кадр {c.frame_id} снят "
-                f"в {tc_short(frame['t'])}",
+                f"в {tc_short(frame['t'])}{хвост}",
             ))
 
         in_gap = next((g for g in gaps if g["from"] <= c.t <= g["to"]), None)

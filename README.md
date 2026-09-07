@@ -7,7 +7,7 @@
 **Ваш агент не смотрел это видео. Он угадал.**
 Здесь у каждого утверждения про экран стоит тайм-код, и его проверяет арифметика.
 
-[![версия](https://img.shields.io/badge/version-0.6.1-1f6feb)](pyproject.toml)
+[![версия](https://img.shields.io/badge/version-0.7.0-1f6feb)](pyproject.toml)
 [![тесты](https://img.shields.io/badge/tests-145-2ea043)](tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](#установка)
 [![зависимости](https://img.shields.io/badge/dependencies-numpy-8957e5)](pyproject.toml)
@@ -187,8 +187,17 @@ frameproof index "https://youtube.com/watch?v=..." --ocr   # индекс, по�
 frameproof install                                         # поставить скилл в Claude Code
 ```
 
-Нужен `ffmpeg`. Остальное необязательно и отваливается мягко: `frameproof doctor` покажет,
-что у вас есть, а чего нет. Ключи не нужны нигде.
+Нужен `ffmpeg`. Для загрузки с YouTube нужен еще **JS-рантайм**: `deno`, `node`,
+`bun` или `quickjs`, любой из них. Без него YouTube отдаст не все форматы и yt-dlp
+упрется в «n challenge solving failed». Своего рантайма у него нет, а по умолчанию
+он ищет только `deno`, поэтому мы подставляем первый найденный сами. Проверить:
+`frameproof doctor`, строка **JS**.
+
+Остальное необязательно и отваливается мягко. Ключи не нужны нигде.
+
+**Если хост закрыт**, отдайте прокси флагом: `--proxy socks5://127.0.0.1:1080`.
+Переменные `ALL_PROXY`, `HTTPS_PROXY` и `HTTP_PROXY` тоже подхватываются: сам yt-dlp
+как библиотека их не читает, и мы читаем за него.
 
 **Про `--ocr` в первой же команде.** На маке встроенное распознавание собирается через
 `swiftc`, а он приходит с Xcode Command Line Tools, см. `frameproof/ocr.py`. Нет их,
@@ -311,12 +320,23 @@ frameproof index "https://kinescope.io/embed/<id>" --ocr
 трогать не надо:
 
 ```bash
-# свой распознаватель: получает пути к картинкам, печатает "путь<TAB>текст"
-frameproof index video.mp4 --ocr --ocr-command "python ocr_windows.py"
+# Windows: встроенный движок системы, ключей и установки не нужно
+pip install winsdk
+frameproof index video.mp4 --ocr --ocr-command "python contrib/ocr_windows.py"
+
+# Linux и все остальные: tesseract
+# Debian: sudo apt install tesseract-ocr tesseract-ocr-rus
+# macOS:  brew install tesseract tesseract-lang
+frameproof index video.mp4 --ocr --ocr-command "python contrib/ocr_tesseract.py"
 
 # готовые субтитры вместо расшифровки: .vtt, .srt или .json3
 frameproof index video.mp4 --subs речь.srt
 ```
+
+Оба скрипта лежат в репозитории, в папке `contrib/`, и написаны под один договор:
+получают пути к картинкам аргументами, печатают строки `путь<TAB>текст`. Свой
+распознаватель пишется по тому же договору, он же используется внутренним
+свифтовым бинарником на маке.
 
 `--ocr-command` это тот же договор, по которому работает внутренний свифтовый бинарник,
 просто вынесенный наружу. Под него без переделок ложится встроенный офлайновый

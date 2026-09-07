@@ -18,7 +18,29 @@ import os
 import sys
 
 from . import __version__
-from .util import parse_tc, plural, slugify, tc_short
+from .util import display_path, parse_tc, plural, slugify, tc_short
+
+
+def _чинить_вывод() -> None:
+    """Разрешить консоли печатать то, что мы пишем.
+
+    Отзыв с Windows: `doctor` падал первой же строкой, потому что консоль там
+    по умолчанию cp1251, а в таблице стоит «✓». Падала не одна команда, а все:
+    кириллица в справке ложится туда же. Лечилось это снаружи, переменной
+    PYTHONIOENCODING, но знать о ней человек не обязан.
+
+    `errors="replace"` оставлен намеренно: если кодировку сменить не дали
+    (перенаправление в файл, чужая обёртка), лучше показать таблицу с потерянным
+    символом, чем не показать ничего.
+    """
+    for поток in (sys.stdout, sys.stderr):
+        try:
+            поток.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError, OSError):
+            pass  # не текстовый поток или перенаправление: печатаем как есть
+
+
+_чинить_вывод()
 
 
 def _work_dir(target: str, explicit: str | None) -> str:
@@ -71,6 +93,8 @@ def cmd_index(args: argparse.Namespace) -> int:
             args.target, out_dir, max_height=args.max_height,
             want_audio=not (args.no_transcribe or transcript is not None),
             cookies_from_browser=args.cookies_from_browser,
+            proxy=args.proxy,
+            js_runtime=args.js_runtime,
         )
         video_path, title, audio_path = got.video_path, got.title, got.audio_path
         if got.subtitle_path and transcript is None:
@@ -173,9 +197,9 @@ def cmd_index(args: argparse.Namespace) -> int:
     print(render(sel, title=title[:60], frame_w=frames[0].width if frames else 0,
                  frame_h=frames[0].height if frames else 0))
     print()
-    print(f"индекс: {out_dir}")
-    print(f"дальше:  frameproof search \"<запрос>\" --out {out_dir}")
-    print(f"         frameproof frames --at 4:12 --out {out_dir}")
+    print(f"индекс: {display_path(out_dir)}")
+    print(f"дальше:  frameproof search \"<запрос>\" --out {display_path(out_dir)}")
+    print(f"         frameproof frames --at 4:12 --out {display_path(out_dir)}")
     return 0 if index["coverage"]["complete"] else 0
 
 
@@ -215,7 +239,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     out_dir = args.out or _work_dir(args.query, None)
     if not os.path.exists(os.path.join(out_dir, "index.json")):
-        print(f"нет индекса в {out_dir}. Сначала: frameproof index <url|файл>", file=sys.stderr)
+        print(f"нет индекса в {display_path(out_dir)}. Сначала: frameproof index <url|файл>", file=sys.stderr)
         return 2
     hits = search(out_dir, args.query, limit=args.limit)
     if not hits:
@@ -241,14 +265,14 @@ def cmd_search(args: argparse.Namespace) -> int:
         print(f"\n⚠ рядом с найденным {сколько} {слово} без кадров: "
               + ", ".join(g["tc"] for g in дыры["near"][:4])
               + (f" и ещё {сколько - 4}" if сколько > 4 else ""))
-        print("  Ответ мог быть и там. Проверьте: frameproof report --out " + out_dir)
+        print("  Ответ мог быть и там. Проверьте: frameproof report --out " + display_path(out_dir))
     elif дыры["all"]:
         всего = len(дыры["all"])
         print(f"\nВсего в записи {всего} "
               f"{plural(всего, 'участок', 'участка', 'участков')} без кадров, "
               "но ближе трёх минут к находкам их нет.")
 
-    print(f"Посмотреть момент: frameproof frames --at {tc_short(hits[0].t)} --out {out_dir}")
+    print(f"Посмотреть момент: frameproof frames --at {tc_short(hits[0].t)} --out {display_path(out_dir)}")
     return 0
 
 
@@ -278,7 +302,7 @@ def cmd_frames(args: argparse.Namespace) -> int:
     for r in rows:
         inside = [g for g in cov["gaps"] if g["from"] <= r["t"] <= g["to"]]
         mark = "  ⚠ участок без гарантии покрытия" if inside else ""
-        print(f"[{r['tc'].split('.')[0]} / {r['id']}] {os.path.join(out_dir, r['path'])}"
+        print(f"[{r['tc'].split('.')[0]} / {r['id']}] {display_path(os.path.join(out_dir, r['path']))}"
               f"  ({r['est_tokens']} токенов){mark}")
         if r.get("caption"):
             print(f"    уже разобран: {r['caption']}")
@@ -381,12 +405,21 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
     print(f"frameproof {__version__}")
     ok = True
-    for tool, why in (("ffmpeg", "разбор видео"), ("ffprobe", "метаданные"),
-                      ("yt-dlp", "ссылки (для локальных файлов не нужен)")):
+    # yt-dlp здесь НЕТ намеренно: код дёргает его как библиотеку (`import yt_dlp`),
+    # бинарь в PATH не вызывается ни разу. Проверка бинаря стояла рядом с проверкой
+    # модуля и давала «✗ НЕ НАЙДЕН» вместе с «✓» про одно и то же — человек шёл
+    # доустанавливать то, что ему не нужно. Модуль проверяется ниже, в своём блоке.
+    for tool, why in (("ffmpeg", "разбор видео"), ("ffprobe", "метаданные")):
         path = shutil.which(tool)
         print(f"  {'✓' if path else '✗'} {tool:<8} {path or 'НЕ НАЙДЕН'}   — {why}")
-        if not path and tool != "yt-dlp":
+        if not path:
             ok = False
+    # JS-runtime. yt-dlp по умолчанию включает только deno, а без рабочего
+    # рантайма YouTube отдаёт не все форматы и падает на «n challenge solving
+    # failed». Ошибка вылезала посреди загрузки, и понять её было нельзя.
+    рантайм = next((b for b in ("deno", "node", "bun", "quickjs") if shutil.which(b)), None)
+    print(f"  {'✓' if рантайм else '✗'} JS       {рантайм or 'НЕ НАЙДЕН'}   — "
+          f"{'YouTube отдаёт все форматы' if рантайм else 'YouTube отдаст НЕ ВСЕ форматы: поставьте deno или node'}")
     try:
         import numpy
         print(f"  ✓ numpy    {numpy.__version__}")
@@ -395,7 +428,7 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         ok = False
     for mod, why in (("mlx_whisper", "быстрая расшифровка на Apple Silicon"),
                      ("whisper", "расшифровка везде"),
-                     ("yt_dlp", "загрузка по ссылке")):
+                     ("yt_dlp", "загрузка по ссылке (нужен только для ссылок)")):
         try:
             __import__(mod)
             print(f"  ✓ {mod:<12} {why}")
@@ -512,6 +545,19 @@ def build_parser() -> argparse.ArgumentParser:
              "переспробованном формате (перебор форматов такое не лечит — это "
              "YouTube просит авторизацию, а не режет конкретный формат). По "
              "умолчанию выключено. Браузеры: " + ", ".join(БРАУЗЕРЫ_С_COOKIES),
+    )
+    i.add_argument(
+        "--js-runtime", metavar="ИМЯ", default=None,
+        help="чем исполнять JS при загрузке с YouTube: deno, node, bun, quickjs. "
+             "Без флага берётся первый найденный. Нужен, если yt-dlp жалуется "
+             "на «n challenge solving failed» или «No supported JavaScript runtime».",
+    )
+    i.add_argument(
+        "--proxy", metavar="АДРЕС", default=None,
+        help="прокси для загрузки: socks5://127.0.0.1:1080 или http://host:port. "
+             "Нужен там, где хост закрыт. Без флага берётся из ALL_PROXY, "
+             "HTTPS_PROXY или HTTP_PROXY: yt-dlp как библиотека сам их НЕ читает, "
+             "поэтому мы читаем за него.",
     )
     i.set_defaults(func=cmd_index)
 

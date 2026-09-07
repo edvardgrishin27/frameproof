@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import shutil
 import sys
 import time
 import urllib.error
@@ -349,7 +350,60 @@ def _проверить_версию_ytdlp(yt_dlp) -> None:
         )
 
 
-def probe_remote(url: str, *, extra_opts: dict | None = None) -> dict:
+#: Переменные, по которым система обычно объявляет прокси. yt-dlp как БИБЛИОТЕКА
+#: их не читает: он берёт прокси только из своей опции. Человек об этом знать
+#: не обязан, поэтому читаем сами и в привычном порядке приоритета.
+_ПЕРЕМЕННЫЕ_ПРОКСИ = ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy",
+                      "HTTP_PROXY", "http_proxy")
+
+
+#: Чем yt-dlp умеет исполнять JS. По умолчанию он включает ТОЛЬКО deno, а без
+#: рабочего рантайма YouTube не отдаёт часть форматов: «n challenge solving failed».
+_JS_РАНТАЙМЫ = ("deno", "node", "bun", "quickjs")
+
+
+def _опции_js_runtime(js_runtime: str | None) -> dict:
+    """Разрешить yt-dlp тот рантайм, который у человека есть.
+
+    Отзыв: «No supported JavaScript runtime could be found. Only deno is enabled
+    by default». Автор этого не видел, потому что deno у него стоял. У большинства
+    стоит node, и инструмент обязан подхватить его сам: заставлять ставить deno
+    ради одного видео значит терять человека на ровном месте.
+
+    Молчим, когда не нашли ничего: выдуманный бинарь только запутает, а yt-dlp
+    скажет об этом понятнее нас.
+    """
+    if js_runtime:
+        return {"js_runtimes": {js_runtime: {}}}
+    if shutil.which("deno"):
+        return {}  # уже включён по умолчанию, подмешивать нечего
+    for имя in _JS_РАНТАЙМЫ[1:]:
+        if shutil.which(имя):
+            return {"js_runtimes": {имя: {}}}
+    return {}
+
+
+def _опции_прокси(proxy: str | None) -> dict:
+    """Опция прокси для yt-dlp: из флага, иначе из окружения.
+
+    Отзыв из России: «переменные окружения не помогают, проверял». Так и есть,
+    и это неочевидно: сам бинарь yt-dlp их учитывает, а библиотека нет.
+
+    Пустой ключ `proxy` в yt-dlp означает «идти напрямую» и глушит системный
+    прокси, поэтому при отсутствии значения ключа быть не должно вовсе.
+    """
+    if proxy:
+        return {"proxy": proxy}
+    for имя in _ПЕРЕМЕННЫЕ_ПРОКСИ:
+        значение = os.environ.get(имя)
+        if значение:
+            return {"proxy": значение}
+    return {}
+
+
+def probe_remote(url: str, *, extra_opts: dict | None = None,
+                 proxy: str | None = None,
+                 js_runtime: str | None = None) -> dict:
     """`extra_opts` — статичные опции yt-dlp, домешиваются в каждую попытку.
 
     Сюда приходят cookies из `fetch()` (см. `_опции_cookies`): `probe_remote`
@@ -358,10 +412,11 @@ def probe_remote(url: str, *, extra_opts: dict | None = None) -> dict:
     """
     yt_dlp = _ydl()
     статичные = extra_opts or {}
+    proxy_opts = {**_опции_прокси(proxy), **_опции_js_runtime(js_runtime)}
 
     def взять(доп):
         with yt_dlp.YoutubeDL({
-            "quiet": True, "skip_download": True, **статичные, **доп,
+            "quiet": True, "skip_download": True, **proxy_opts, **статичные, **доп,
         }) as ydl:
             return ydl.extract_info(url, download=False)
 
@@ -391,7 +446,9 @@ def _pick_subtitle(info: dict, langs=SUB_LANGS) -> tuple[str | None, str | None,
 
 def fetch(url: str, work_dir: str, *, max_height: int = 1080,
           langs=SUB_LANGS, want_video: bool = True, want_audio: bool = True,
-          cookies_from_browser: str | None = None) -> Fetched:
+          cookies_from_browser: str | None = None,
+          proxy: str | None = None,
+          js_runtime: str | None = None) -> Fetched:
     """Скачивает метаданные, субтитры (если есть), аудио и/или видео.
 
     `cookies_from_browser` — имя установленного браузера (`chrome`, `firefox`,
@@ -416,13 +473,14 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
     yt_dlp = _ydl()
     _проверить_версию_ytdlp(yt_dlp)
     cookies_opts = _опции_cookies(cookies_from_browser)
-    info = probe_remote(url, extra_opts=cookies_opts)
+    proxy_opts = {**_опции_прокси(proxy), **_опции_js_runtime(js_runtime)}
+    info = probe_remote(url, extra_opts=cookies_opts, proxy=proxy, js_runtime=js_runtime)
 
     sub_path = None
     sub_url, sub_lang, sub_auto = _pick_subtitle(info, langs)
     if sub_url:
         def взять_субтитры(доп):
-            with yt_dlp.YoutubeDL({"quiet": True, **cookies_opts, **доп}) as ydl:
+            with yt_dlp.YoutubeDL({"quiet": True, **proxy_opts, **cookies_opts, **доп}) as ydl:
                 return ydl.urlopen(sub_url).read()
 
         raw, _ = _с_повторами(взять_субтитры, "субтитры")
@@ -442,7 +500,7 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
                     with yt_dlp.YoutubeDL({
                         "quiet": True, "no_warnings": True,
                         "outtmpl": audio_path, "format": формат,
-                        **cookies_opts, **доп,
+                        **proxy_opts, **cookies_opts, **доп,
                     }) as ydl:
                         return ydl.download([url])
                 return взять
@@ -482,7 +540,7 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
                     # Только видеодорожка: звук здесь не нужен, а качество
                     # картинки нужно (кроме нижних рунгов — там уже неважно,
                     # лишь бы прошло, см. _форматы_видео).
-                    with yt_dlp.YoutubeDL({**opts, "format": формат, **доп}) as ydl:
+                    with yt_dlp.YoutubeDL({**opts, **proxy_opts, "format": формат, **доп}) as ydl:
                         return ydl.download([url])
                 return взять
 

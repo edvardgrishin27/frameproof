@@ -6,7 +6,7 @@
 
 **Your coding agent did not watch that video. It guessed.**
 
-[![version](https://img.shields.io/badge/version-0.6.1-1f6feb)](pyproject.toml)
+[![version](https://img.shields.io/badge/version-0.7.0-1f6feb)](pyproject.toml)
 [![tests](https://img.shields.io/badge/tests-145-2ea043)](tests)
 [![api keys](https://img.shields.io/badge/API%20keys-none-555555)](#install)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
