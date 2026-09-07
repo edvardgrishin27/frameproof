@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 КОРЕНЬ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONTRIB = os.path.join(КОРЕНЬ, "contrib")
+CONTRIB = os.path.join(КОРЕНЬ, "frameproof", "contrib")
 
 
 def test_скрипты_есть():
@@ -59,3 +59,19 @@ def test_оба_скрипта_держат_один_договор():
         t = io.open(os.path.join(CONTRIB, имя), encoding="utf-8").read()
         assert '\\t' in t or "\t" in t, "%s не печатает TAB-разделитель" % имя
         assert "путь<TAB>текст" in t, "%s не описывает договор в шапке" % имя
+
+
+def test_скрипты_едут_в_пакет():
+    """После pip install файлы должны быть на месте: README на них ссылается.
+
+    Ровно на этом уже спотыкались с навыком: он лежал в репозитории, но не в
+    дистрибутиве, и после установки копировать было неоткуда.
+    """
+    import io as _io
+    манифест = _io.open(os.path.join(КОРЕНЬ, "pyproject.toml"), encoding="utf-8").read()
+    assert "contrib/*.py" in манифест, "contrib не объявлен в package-data"
+
+
+def test_путь_в_readme_ведёт_внутрь_пакета():
+    t = io.open(os.path.join(КОРЕНЬ, "README.md"), encoding="utf-8").read()
+    assert "frameproof/contrib/" in t, "README указывает путь, которого нет после установки"

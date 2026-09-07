@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frameproof"
-version = "0.7.0"
+version = "0.7.1"
 description = "Your agent watches video with no blind spots and proves with a timecode what it actually saw"
 readme = "README.en.md"
 requires-python = ">=3.10"
@@ -43,7 +43,10 @@ packages = ["frameproof"]
 [tool.setuptools.package-data]
 # Скилл и субагент обязаны попадать в дистрибутив: без них `frameproof install`
 # после `pip install` не находит файлы и весь сценарий из README не работает.
-frameproof = ["py.typed", "assets/skill/*.md", "assets/agents/*.md"]
+# contrib/ едет туда же и по той же причине: README предлагает
+# `--ocr-command "python .../ocr_windows.py"`, и после pip install этот файл
+# должен где-то лежать. Ровно на этом уже спотыкались с навыком.
+frameproof = ["py.typed", "assets/skill/*.md", "assets/agents/*.md", "contrib/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

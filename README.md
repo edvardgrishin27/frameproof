@@ -7,7 +7,7 @@
 **Ваш агент не смотрел это видео. Он угадал.**
 Здесь у каждого утверждения про экран стоит тайм-код, и его проверяет арифметика.
 
-[![версия](https://img.shields.io/badge/version-0.7.0-1f6feb)](pyproject.toml)
+[![версия](https://img.shields.io/badge/version-0.7.1-1f6feb)](pyproject.toml)
 [![тесты](https://img.shields.io/badge/tests-145-2ea043)](tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](#установка)
 [![зависимости](https://img.shields.io/badge/dependencies-numpy-8957e5)](pyproject.toml)
@@ -322,18 +322,18 @@ frameproof index "https://kinescope.io/embed/<id>" --ocr
 ```bash
 # Windows: встроенный движок системы, ключей и установки не нужно
 pip install winsdk
-frameproof index video.mp4 --ocr --ocr-command "python contrib/ocr_windows.py"
+frameproof index video.mp4 --ocr --ocr-command "python frameproof/contrib/ocr_windows.py"
 
 # Linux и все остальные: tesseract
 # Debian: sudo apt install tesseract-ocr tesseract-ocr-rus
 # macOS:  brew install tesseract tesseract-lang
-frameproof index video.mp4 --ocr --ocr-command "python contrib/ocr_tesseract.py"
+frameproof index video.mp4 --ocr --ocr-command "python frameproof/contrib/ocr_tesseract.py"
 
 # готовые субтитры вместо расшифровки: .vtt, .srt или .json3
 frameproof index video.mp4 --subs речь.srt
 ```
 
-Оба скрипта лежат в репозитории, в папке `contrib/`, и написаны под один договор:
+Оба скрипта едут внутри пакета, в `frameproof/contrib/`, и после `pip install` уже на месте. Написаны они и написаны под один договор:
 получают пути к картинкам аргументами, печатают строки `путь<TAB>текст`. Свой
 распознаватель пишется по тому же договору, он же используется внутренним
 свифтовым бинарником на маке.
