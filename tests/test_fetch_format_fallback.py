@@ -292,3 +292,38 @@ def test_fetch_видео_403_на_всех_форматах_поднимает�
     with pytest.raises(RuntimeError) as поймано:
         f.fetch("https://youtu.be/xxxxxxxxxxx", str(tmp_path))
     assert "403" in str(поймано.value)
+
+
+def test_fetch_без_субтитров_не_падает_а_идёт_в_расшифровку(monkeypatch, tmp_path):
+    """Субтитры — ускоритель, а не обязательная часть.
+
+    Живой прогон 11.10.2026: YouTube отдал 429 на ссылку субтитров у всех
+    четырёх клиентов, и вся команда упала, хотя видео и звук качались.
+    Теперь отказ субтитров печатается, а fetch() берёт аудио для расшифровки.
+    """
+    скачано = []
+
+    def записать(opts):
+        скачано.append(opts["outtmpl"])
+        with open(opts["outtmpl"], "wb") as fh:
+            fh.write(b"bytes")
+
+    поддельный = _поддельный_yt_dlp(при_скачивании=записать)
+
+    def urlopen_с_отказом(self, _url):
+        # Не 429: на нём включилась бы лесенка настоящих пауз (до 260 с).
+        # Здесь проверяется только то, что отказ субтитров не роняет fetch().
+        raise RuntimeError("субтитры: сеть оборвалась")
+
+    поддельный.YoutubeDL.urlopen = urlopen_с_отказом
+    monkeypatch.setattr(f, "_ydl", lambda: поддельный)
+    monkeypatch.setattr(
+        f, "_pick_subtitle",
+        lambda info, langs: ("http://sub.example/x.json3", "ru", False),
+    )
+
+    итог = f.fetch("https://youtu.be/xxxxxxxxxxx", str(tmp_path))
+
+    assert итог.subtitle_path is None
+    assert итог.audio_path and итог.audio_path.endswith("audio.m4a"), итог.audio_path
+    assert os.path.join(str(tmp_path), "video.mp4") in скачано

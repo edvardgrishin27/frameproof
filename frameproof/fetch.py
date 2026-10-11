@@ -383,6 +383,28 @@ def _опции_js_runtime(js_runtime: str | None) -> dict:
     return {}
 
 
+#: Таймаут сокета, секунды. Без него повисший запрос ждёт столько, сколько
+#: решит система, и человек видит «качаю» без единого признака жизни.
+ТАЙМАУТ_СОКЕТА = 30
+
+
+def _опции_сети() -> dict:
+    """IPv4 по умолчанию и таймаут сокета для каждого вызова yt-dlp.
+
+    Живой замер 11.10.2026, один ролик, одна минута: метаданные через IPv4
+    пришли за 2,5 с, через путь по умолчанию — за 502,9 с. Маршрут IPv6
+    до YouTube бывает настолько медленным, что инструмент выглядит зависшим;
+    в ручных командах это давно решалось флагом `yt-dlp -4`, а здесь его не было.
+
+    `FRAMEPROOF_IPV6=1` возвращает поведение yt-dlp по умолчанию — для сетей,
+    где IPv6 как раз работает лучше.
+    """
+    opts: dict = {"socket_timeout": ТАЙМАУТ_СОКЕТА}
+    if os.environ.get("FRAMEPROOF_IPV6", "").strip() not in ("1", "true", "yes"):
+        opts["source_address"] = "0.0.0.0"
+    return opts
+
+
 def _опции_прокси(proxy: str | None) -> dict:
     """Опция прокси для yt-dlp: из флага, иначе из окружения.
 
@@ -412,7 +434,7 @@ def probe_remote(url: str, *, extra_opts: dict | None = None,
     """
     yt_dlp = _ydl()
     статичные = extra_opts or {}
-    proxy_opts = {**_опции_прокси(proxy), **_опции_js_runtime(js_runtime)}
+    proxy_opts = {**_опции_сети(), **_опции_прокси(proxy), **_опции_js_runtime(js_runtime)}
 
     def взять(доп):
         with yt_dlp.YoutubeDL({
@@ -424,12 +446,30 @@ def probe_remote(url: str, *, extra_opts: dict | None = None,
     return info
 
 
+def _языки_по_порядку(info: dict, langs) -> list[str]:
+    """Язык самого ролика первым, дальше запрошенный порядок.
+
+    У YouTube автосубтитры есть почти на всех языках, но всё, кроме языка
+    ролика, — машинный перевод. Живой прогон 11.10.2026: английский ролик
+    (`language` = `en-US`) получал русский перевод, потому что `ru` стоял
+    в `langs` первым. Признак оригинала — поле `language`, а не пометка
+    `-orig`: она стояла у двадцати с лишним языков того же ролика.
+    """
+    исходный = (info.get("language") or "").split("-")[0].lower()
+    порядок = [исходный] if исходный else []
+    return порядок + [l for l in langs if l != исходный]
+
+
 def _pick_subtitle(info: dict, langs=SUB_LANGS) -> tuple[str | None, str | None, bool]:
-    """Возвращает (url, язык, авто?). Ручные субтитры приоритетнее автоматических."""
+    """Возвращает (url, язык, авто?). Ручные субтитры приоритетнее автоматических,
+    язык самого ролика приоритетнее перевода."""
     for auto in (False, True):
         table = info.get("automatic_captions" if auto else "subtitles") or {}
-        for lang in langs:
-            for key in (lang, f"{lang}-orig"):
+        for lang in _языки_по_порядку(info, langs):
+            # У автосубтитров `-orig` — расшифровка речи, а без пометки бывает
+            # перевод с неё же; у ручных порядок обратный и пометки обычно нет.
+            ключи = (f"{lang}-orig", lang) if auto else (lang, f"{lang}-orig")
+            for key in ключи:
                 tracks = table.get(key)
                 if not tracks:
                     continue
@@ -473,7 +513,7 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
     yt_dlp = _ydl()
     _проверить_версию_ytdlp(yt_dlp)
     cookies_opts = _опции_cookies(cookies_from_browser)
-    proxy_opts = {**_опции_прокси(proxy), **_опции_js_runtime(js_runtime)}
+    proxy_opts = {**_опции_сети(), **_опции_прокси(proxy), **_опции_js_runtime(js_runtime)}
     info = probe_remote(url, extra_opts=cookies_opts, proxy=proxy, js_runtime=js_runtime)
 
     sub_path = None
@@ -483,11 +523,20 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
             with yt_dlp.YoutubeDL({"quiet": True, **proxy_opts, **cookies_opts, **доп}) as ydl:
                 return ydl.urlopen(sub_url).read()
 
-        raw, _ = _с_повторами(взять_субтитры, "субтитры")
-        ext = "json3" if b'"events"' in raw[:400] else "vtt"
-        sub_path = os.path.join(work_dir, f"subs.{sub_lang}.{ext}")
-        with open(sub_path, "wb") as fh:
-            fh.write(raw)
+        try:
+            raw, _ = _с_повторами(взять_субтитры, "субтитры")
+        except Exception as exc:
+            # Субтитры ускоряют работу, но не обязательны: без них звук
+            # расшифруется локально. Живой прогон 11.10.2026: YouTube отдал 429
+            # на ссылку субтитров у всех клиентов, и падала вся команда.
+            print(f"субтитры не скачались: {exc}", file=sys.stderr)
+            print("  беру звук и расшифровываю сам", file=sys.stderr)
+            raw = None
+        if raw is not None:
+            ext = "json3" if b'"events"' in raw[:400] else "vtt"
+            sub_path = os.path.join(work_dir, f"subs.{sub_lang}.{ext}")
+            with open(sub_path, "wb") as fh:
+                fh.write(raw)
 
     # Видео тянем БЕЗ звука — так поток чётче при том же весе. Но если субтитров
     # не нашлось, расшифровывать будет нечего, поэтому аудиодорожку берём отдельно.
