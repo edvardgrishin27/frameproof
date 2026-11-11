@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 
@@ -220,8 +221,41 @@ def write(
     return index
 
 
+def _fold(text: str) -> str:
+    """Нижний регистр и ё→е: так хранится и так ищется."""
+    return " ".join(str(text).lower().replace("ё", "е").split())
+
+
+#: Окончания, которые срезаются у слов запроса: «таблица» должна находить
+#: «таблицу», «маршрутизации» — «маршрутизация». Это не морфология, а грубая
+#: основа: поиск всё равно подстрочный, лишняя буква основы стоит промаха.
+_RU_ENDINGS = ("ями", "ами", "ого", "его", "ому", "ему", "ыми", "ими", "ах", "ях",
+               "ов", "ев", "ей", "ой", "ий", "ый", "ая", "яя", "ое", "ее", "ые", "ие",
+               "ую", "юю", "ом", "ем", "ам", "ям", "а", "я", "ы", "и", "у", "ю", "е",
+               "о", "ь")
+_EN_ENDINGS = ("ing", "ed", "es", "s")
+#: Короче этого основа не обрезается: из «кот» вышло бы «ко».
+_STEM_MIN = 4
+
+
+def _stem(word: str) -> str:
+    endings = _RU_ENDINGS if re.search("[а-я]", word) else _EN_ENDINGS
+    for end in endings:
+        if word.endswith(end) and len(word) - len(end) >= _STEM_MIN:
+            return word[: -len(end)]
+    return word
+
+
+def _query_terms(query: str) -> list[str]:
+    """Слова запроса в виде основ. Порядок слов не важен, важно наличие всех."""
+    return [_stem(w) for w in re.findall(r"[\w.:/+#-]+", _fold(query)) if w.strip(".-")]
+
+
 def build_search(out_dir: str) -> str:
-    """FTS5 с триграммами: подстрочный поиск, устойчивый к русским падежам."""
+    """FTS5 с триграммами: подстрочный поиск, устойчивый к русским падежам.
+
+    Тело хранится сложенным (нижний регистр, ё→е), а показывается исходный текст.
+    """
     db_path = os.path.join(out_dir, "search.sqlite3")
     if os.path.exists(db_path):
         os.remove(db_path)
@@ -229,84 +263,87 @@ def build_search(out_dir: str) -> str:
     try:
         con.execute(
             "CREATE VIRTUAL TABLE fts USING fts5("
-            "kind UNINDEXED, t UNINDEXED, ref UNINDEXED, body, tokenize='trigram')"
+            "kind UNINDEXED, t UNINDEXED, ref UNINDEXED, shown UNINDEXED, body, "
+            "tokenize='trigram')"
         )
-        rows: list[tuple[str, float, str, str]] = []
-        seg_file = os.path.join(out_dir, "segments.jsonl")
-        if os.path.exists(seg_file):
-            with open(seg_file, encoding="utf-8") as fh:
-                for line in fh:
-                    r = json.loads(line)
-                    rows.append(("speech", r["t0"], f"seg#{r['i']}", r["text"]))
-        fr_file = os.path.join(out_dir, "frames.jsonl")
-        if os.path.exists(fr_file):
-            with open(fr_file, encoding="utf-8") as fh:
-                for line in fh:
-                    r = json.loads(line)
-                    if r.get("ocr"):
-                        rows.append(("screen", r["t"], r["id"], r["ocr"]))
-        con.executemany("INSERT INTO fts (kind, t, ref, body) VALUES (?, ?, ?, ?)", rows)
+        rows = [(k, t, r, text, _fold(text)) for k, t, r, text in _rows(out_dir)]
+        con.executemany(
+            "INSERT INTO fts (kind, t, ref, shown, body) VALUES (?, ?, ?, ?, ?)", rows)
         con.commit()
     finally:
         con.close()
     return db_path
 
 
+def _rows(out_dir: str):
+    """Всё, по чему ищем: реплики и текст кадров. Один источник для FTS и запасного пути."""
+    seg_file = os.path.join(out_dir, "segments.jsonl")
+    if os.path.exists(seg_file):
+        with open(seg_file, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    r = json.loads(line)
+                    yield "speech", float(r["t0"]), f"seg#{r['i']}", r["text"]
+    fr_file = os.path.join(out_dir, "frames.jsonl")
+    if os.path.exists(fr_file):
+        with open(fr_file, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    r = json.loads(line)
+                    if r.get("ocr"):
+                        yield "screen", float(r["t"]), r["id"], r["ocr"]
+
+
 #: Токенайзер trigram физически не умеет искать короче трёх символов.
 TRIGRAM_MIN = 3
 
 
-def _search_plain(out_dir: str, query: str, limit: int) -> list[Hit]:
-    """Прямой проход по строкам — для запросов, которые триграммам не по зубам.
+def _search_plain(out_dir: str, terms: list[str], limit: int) -> tuple[list[Hit], int]:
+    """Прямой проход по строкам — для слов, которые триграммам не по зубам.
 
-    Без этого `search "AI"` или `search "v2"` молча возвращали «не найдено»:
-    FTS5 с токенайзером trigram на запросе короче трёх символов не находит ничего
-    и об этом не сообщает. Для канала про ИИ запрос «AI» — не экзотика.
+    Без этого `search "AI"` или `search "v2"` молча возвращали «не найдено».
+    Совпадения собираются ВСЕ и только потом режутся по времени: раньше лимит
+    набирался речью, и до текста с экрана дело не доходило.
     """
-    needle = query.lower().replace("ё", "е")
-    hits: list[Hit] = []
-    for name, kind, ref_key, text_key in (
-        ("segments.jsonl", "speech", "i", "text"),
-        ("frames.jsonl", "screen", "id", "ocr"),
-    ):
-        path = os.path.join(out_dir, name)
-        if not os.path.exists(path):
-            continue
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                row = json.loads(line)
-                body = row.get(text_key) or ""
-                if needle not in body.lower().replace("ё", "е"):
-                    continue
-                ref = f"seg#{row['i']}" if kind == "speech" else row["id"]
-                hits.append(Hit(kind=kind, t=float(row.get("t0", row.get("t", 0.0))),
-                                text=body, ref=ref))
-                if len(hits) >= limit:
-                    return sorted(hits, key=lambda h: h.t)
-    return sorted(hits, key=lambda h: h.t)
+    hits = [Hit(kind=k, t=t, text=text, ref=r)
+            for k, t, r, text in _rows(out_dir)
+            if all(term in _fold(text) for term in terms)]
+    hits.sort(key=lambda h: h.t)
+    return hits[:limit], len(hits)
 
 
-def search(out_dir: str, query: str, *, limit: int = 20) -> list[Hit]:
-    query = query.strip()
-    if len(query) < TRIGRAM_MIN:
-        return _search_plain(out_dir, query, limit)
+def search_with_total(out_dir: str, query: str, *, limit: int = 20) -> tuple[list[Hit], int]:
+    """Совпадения по времени и общее их число: агент должен знать, что видит не всё."""
+    terms = _query_terms(query)
+    if not terms:
+        return [], 0
+    if any(len(t) < TRIGRAM_MIN for t in terms):
+        return _search_plain(out_dir, terms, limit)
 
     db_path = os.path.join(out_dir, "search.sqlite3")
     if not os.path.exists(db_path):
         build_search(out_dir)
+    # Каждое слово — отдельная подстрока, все через AND. Кавычка внутри слова
+    # удваивается: иначе она рвала строку FTS5 и роняла команду.
+    match = " AND ".join('"' + t.replace('"', '""') + '"' for t in terms)
     con = sqlite3.connect(db_path)
     try:
-        # Кавычка внутри запроса рвала строку FTS5 и роняла команду.
-        safe = query.replace('"', '""')
         cur = con.execute(
-            "SELECT kind, t, ref, body FROM fts WHERE fts MATCH ? ORDER BY t LIMIT ?",
-            (f'"{safe}"', limit),
+            "SELECT kind, t, ref, shown FROM fts WHERE fts MATCH ? ORDER BY t LIMIT ?",
+            (match, limit),
         )
-        return [Hit(kind=k, t=float(t), text=b, ref=r) for k, t, r, b in cur.fetchall()]
+        hits = [Hit(kind=k, t=float(t), text=b, ref=r) for k, t, r, b in cur.fetchall()]
+        total = con.execute("SELECT count(*) FROM fts WHERE fts MATCH ?", (match,)).fetchone()[0]
+        return hits, int(total)
     except sqlite3.OperationalError:
-        return _search_plain(out_dir, query, limit)
+        # Старый индекс без колонки shown или иная схема — честный проход по строкам.
+        return _search_plain(out_dir, terms, limit)
     finally:
         con.close()
+
+
+def search(out_dir: str, query: str, *, limit: int = 20) -> list[Hit]:
+    return search_with_total(out_dir, query, limit=limit)[0]
 
 
 def load_index(out_dir: str) -> dict:

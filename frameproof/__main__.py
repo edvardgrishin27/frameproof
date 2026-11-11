@@ -325,13 +325,13 @@ def _local_transcript(source_path: str, out_dir: str, lang: str | None):
 
 
 def cmd_search(args: argparse.Namespace) -> int:
-    from .index import gaps_near_hits, load_index, search
+    from .index import gaps_near_hits, load_index, search_with_total
 
-    out_dir = args.out or _work_dir(args.query, None)
+    out_dir = args.out
     if not os.path.exists(os.path.join(out_dir, "index.json")):
         print(f"нет индекса в {display_path(out_dir)}. Сначала: frameproof index <url|файл>", file=sys.stderr)
         return 2
-    hits = search(out_dir, args.query, limit=args.limit)
+    hits, total = search_with_total(out_dir, args.query, limit=args.limit)
     if not hits:
         print(f"не найдено: {args.query!r}")
         idx = load_index(out_dir)
@@ -342,8 +342,15 @@ def cmd_search(args: argparse.Namespace) -> int:
         line = h.line()
         print(line if len(line) <= 200 else line[:197] + "...")
     print()
-    print(f"{len(hits)} {plural(len(hits), 'совпадение', 'совпадения', 'совпадений')}. "
-          "Ни одной картинки не загружено.")
+    if total > len(hits):
+        # Выдача идёт по времени: обрезанный хвост — это поздние моменты ролика.
+        # Без этой строки агент решал, что тема звучит только в начале.
+        print(f"показано {len(hits)} из {total} "
+              f"{plural(total, 'совпадения', 'совпадений', 'совпадений')} — первые по времени. "
+              f"Остальные: --limit {total}. Ни одной картинки не загружено.")
+    else:
+        print(f"{len(hits)} {plural(len(hits), 'совпадение', 'совпадения', 'совпадений')}. "
+              "Ни одной картинки не загружено.")
 
     # Оговорка к ответу, а не общая статистика: где искать было НЕ ПО ЧЕМУ.
     # Без неё человек отвечает уверенно, не зная, что рядом с найденным
@@ -392,7 +399,7 @@ def cmd_frames(args: argparse.Namespace) -> int:
     for r in rows:
         inside = [g for g in cov["gaps"] if g["from"] <= r["t"] <= g["to"]]
         mark = "  ⚠ участок без гарантии покрытия" if inside else ""
-        print(f"[{r['tc'].split('.')[0]} / {r['id']}] {display_path(os.path.join(out_dir, r['path']))}"
+        print(f"[{tc_short(r['t'])} / {r['id']}] {display_path(os.path.join(out_dir, r['path']))}"
               f"  ({r['est_tokens']} токенов){mark}")
         if r.get("caption"):
             print(f"    уже разобран: {r['caption']}")
