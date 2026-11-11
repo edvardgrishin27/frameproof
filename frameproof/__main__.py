@@ -199,8 +199,19 @@ def cmd_index(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
 
+    window = _window(args, info.duration)
+    if window is False:
+        return 2
+
     if transcript is None and not args.no_transcribe:
         transcript = _local_transcript(audio_path or video_path, out_dir, args.lang)
+    if transcript is not None and window:
+        # Речь вне окна без кадров только путала бы поиск: оставляем реплики окна.
+        from dataclasses import replace as _replace
+
+        a, b = window
+        transcript = _replace(transcript, segments=[
+            s for s in transcript.segments if s.t1 >= a and s.t0 <= b])
     if transcript is None and not args.no_transcribe:
         print(
             "⚠ транскрипта нет — искать по речи будет нечему. "
@@ -214,15 +225,16 @@ def cmd_index(args: argparse.Namespace) -> int:
         print("анализирую изменения экрана...", file=sys.stderr)
     from .analyze import FastModeUnreliable
 
+    start, end = window or (0.0, info.duration)
     try:
-        sig = analyze(info, fast=args.fast)
+        sig = analyze(info, fast=args.fast, start=start, end=end)
     except FastModeUnreliable as exc:
         print(f"⚠ быстрый проход ненадёжен ({exc}) — делаю полный", file=sys.stderr)
-        sig = analyze(info, fast=False)
+        sig = analyze(info, fast=False, start=start, end=end)
     # Декод мог оборваться на битом файле: анализ дошёл до середины и замолчал.
     # Кадры дальше поставит только сетка — об этом надо сказать вслух.
-    if not args.fast and len(sig.times) and info.duration - sig.times[-1] > DECODE_SLACK:
-        print(f"⚠ декод оборвался на {tc_short(sig.times[-1])} из {tc_short(info.duration)}: "
+    if not args.fast and len(sig.times) and end - sig.times[-1] > DECODE_SLACK:
+        print(f"⚠ декод оборвался на {tc_short(sig.times[-1])} из {tc_short(end)}: "
               "дальше смены экрана не отслеживались, кадры там только по сетке, "
               "а снять их может не выйти — смотри отчёт покрытия", file=sys.stderr)
 
@@ -235,7 +247,7 @@ def cmd_index(args: argparse.Namespace) -> int:
             print(f"якорей по речи («вот здесь», «смотрите»): {len(cues)}", file=sys.stderr)
 
     sel = select_frames(
-        sig, info.duration, max_gap=args.max_gap, cap=args.max_frames, cues=cues
+        sig, end, max_gap=args.max_gap, cap=args.max_frames, cues=cues, start=start
     )
     print(f"извлекаю {len(sel.picks)} "
           f"{plural(len(sel.picks), 'кадр', 'кадра', 'кадров')}...", file=sys.stderr)
@@ -263,6 +275,7 @@ def cmd_index(args: argparse.Namespace) -> int:
         transcript=transcript,
         source_url=source_url,
         title=title,
+        window=window or None,
     )
 
     if args.ocr:
@@ -315,6 +328,26 @@ def cmd_index(args: argparse.Namespace) -> int:
     print(f"         frameproof frames --at 4:12 --out {display_path(out_dir)}")
     # Код 0 и при неполном покрытии: индекс собран, а разрывы названы в отчёте.
     return 0
+
+
+def _window(args: argparse.Namespace, duration: float):
+    """Окно --from/--to в секундах; None — весь ролик; False — окно задано с ошибкой."""
+    if not (args.t_from or args.t_to):
+        return None
+    try:
+        a = parse_tc(args.t_from) if args.t_from else 0.0
+        b = parse_tc(args.t_to) if args.t_to else duration
+    except ValueError as exc:
+        print(f"окно: {exc}", file=sys.stderr)
+        return False
+    b = min(b, duration)
+    if not 0.0 <= a < b:
+        print(f"окно {args.t_from or '0:00'}–{args.t_to or tc_short(duration)} пустое или "
+              f"вне ролика ({tc_short(duration)})", file=sys.stderr)
+        return False
+    print(f"окно {tc_short(a)}–{tc_short(b)} из {tc_short(duration)}: кадры только в нём",
+          file=sys.stderr)
+    return a, b
 
 
 def _nonempty(transcript, source: str, args: argparse.Namespace):
@@ -728,6 +761,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "печатает строки «путь<TAB>текст». Для Windows и Linux")
     i.add_argument("--subs", default=None,
                    help="готовые субтитры (.vtt/.srt/.json3) — вместо расшифровки")
+    i.add_argument("--from", dest="t_from", default=None,
+                   help="начало окна: индексировать только кусок ролика, напр. 10:00")
+    i.add_argument("--to", dest="t_to", default=None,
+                   help="конец окна, напр. 25:00. Тайм-коды остаются от начала ролика")
     i.add_argument("--no-cues", action="store_true",
                    help="не ставить кадры по указательным репликам («вот здесь», «смотрите»)")
     i.add_argument("--no-transcribe", action="store_true",

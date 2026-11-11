@@ -109,6 +109,8 @@ class Selection:
     cap: int = 0
     #: Кадры из плана, которые ffmpeg снять не смог. Их места — настоящие разрывы.
     missing: int = 0
+    #: Начало окна. Индекс по куску ролика (--from) считает покрытие от него.
+    start: float = 0.0
 
     @property
     def times(self) -> list[float]:
@@ -117,17 +119,18 @@ class Selection:
     @property
     def actual_max_gap(self) -> float:
         if not self.picks:
-            return self.duration
-        edges = [0.0] + self.times + [self.duration]
+            return self.duration - self.start
+        edges = [self.start] + self.times + [self.duration]
         return max(b - a for a, b in zip(edges, edges[1:]))
 
     @property
     def coverage(self) -> float:
         """Доля хронометража, попавшая в промежутки не длиннее цели."""
-        if self.duration <= 0:
+        span = self.duration - self.start
+        if span <= 0:
             return 0.0
         uncovered = sum(b - a for a, b in self.gaps)
-        return max(0.0, 1.0 - uncovered / self.duration)
+        return max(0.0, 1.0 - uncovered / span)
 
     @property
     def safety_count(self) -> int:
@@ -237,11 +240,12 @@ def _enforce_min_gap(picks: list[Pick], min_gap: float) -> list[Pick]:
     return out
 
 
-def _fill_gaps(picks: list[Pick], duration: float, max_gap: float) -> list[Pick]:
+def _fill_gaps(picks: list[Pick], duration: float, max_gap: float,
+               start: float = 0.0) -> list[Pick]:
     """Страховка: закрывает любой промежуток длиннее max_gap кадрами по сетке."""
     times = sorted(p.t for p in picks)
     filled = list(picks)
-    edges = [0.0] + times + [duration]
+    edges = [start] + times + [duration]
     for a, b in zip(edges, edges[1:]):
         span = b - a
         if span <= max_gap:
@@ -250,13 +254,14 @@ def _fill_gaps(picks: list[Pick], duration: float, max_gap: float) -> list[Pick]
         step = span / (n + 1)
         for k in range(1, n + 1):
             t = a + step * k
-            if 0.0 <= t <= duration:
+            if start <= t <= duration:
                 filled.append(Pick(t=round(t, 3), reason="grid", change=0.0))
     filled.sort(key=lambda p: p.t)
     return filled
 
 
-def _thin(picks: list[Pick], cap: int, duration: float, max_gap: float) -> tuple[list[Pick], int]:
+def _thin(picks: list[Pick], cap: int, duration: float, max_gap: float,
+          start: float = 0.0) -> tuple[list[Pick], int]:
     """Прореживание, которое НЕ ломает гарантию покрытия.
 
     Наивное «взять каждый N-й» выкидывает кадры вслепую и рвёт таймлайн: на живом
@@ -299,9 +304,9 @@ def _thin(picks: list[Pick], cap: int, duration: float, max_gap: float) -> tuple
             # Якорь начала не трогаем. Для нулевого индекса разрыв слева считается
             # от 0.0, поэтому его удаление выглядит бесплатным — и прореживание
             # первым делом выкидывало ровно тот кадр, который мы только что поставили.
-            if i == 0 and kept[i].t <= 1e-6:
+            if i == 0 and kept[i].t <= start + 1e-6:
                 continue
-            left = kept[i - 1].t if i > 0 else 0.0
+            left = kept[i - 1].t if i > 0 else start
             right = kept[i + 1].t if i + 1 < len(kept) else duration
             new_gap = right - left
             if new_gap > max_gap:
@@ -322,9 +327,10 @@ def _thin(picks: list[Pick], cap: int, duration: float, max_gap: float) -> tuple
     return kept, dropped
 
 
-def _measure_gaps(picks: list[Pick], duration: float, max_gap: float) -> list[tuple[float, float]]:
+def _measure_gaps(picks: list[Pick], duration: float, max_gap: float,
+                  start: float = 0.0) -> list[tuple[float, float]]:
     times = [p.t for p in picks]
-    edges = [0.0] + times + [duration]
+    edges = [start] + times + [duration]
     return [(a, b) for a, b in zip(edges, edges[1:]) if b - a > max_gap + 1e-6]
 
 
@@ -340,19 +346,22 @@ def select_frames(
     same_screen: float = SAME_SCREEN,
     cues: list[float] | None = None,
     cap: int = 0,
+    start: float = 0.0,
 ) -> Selection:
+    """`start`..`duration` — отрезок, по которому строится индекс (весь ролик или окно)."""
+    length = duration - start
     auto_cap = cap <= 0
     if auto_cap:
-        cap = frame_budget(duration)
+        cap = frame_budget(length)
     # Гарантия в 15 секунд на 14-секундном ролике бессмысленна: один кадр, и отчёт
     # гордо пишет «покрытие 100 %». На коротком видео шаг должен быть от длительности.
-    if duration < SHORT_VIDEO:
-        max_gap = min(max_gap, max(1.0, duration / 12.0))
+    if length < SHORT_VIDEO:
+        max_gap = min(max_gap, max(1.0, length / 12.0))
     if auto_cap:
         # Потолок по умолчанию не должен спорить с гарантией: на трёх часах при
         # 15 с это минимум 721 кадр, а потолок был 600, и отчёт всегда писал
         # «потолок не выдержан», хотя никто ничего не просил.
-        cap = max(cap, math.ceil(duration / max_gap) + 1)
+        cap = max(cap, math.ceil(length / max_gap) + 1)
 
     # 1. Детект
     picks: list[Pick] = []
@@ -365,9 +374,9 @@ def select_frames(
             for t, c in zip(sig.times, sig.change)
         ]
     else:
-        for start, settle in _bursts(sig, threshold, quiet, merge_gap):
-            strength = float(sig.change[start : settle + 1].max())
-            for i in _split_burst(sig, start, settle, NOVELTY_BUDGET, min_gap):
+        for b0, settle in _bursts(sig, threshold, quiet, merge_gap):
+            strength = float(sig.change[b0 : settle + 1].max())
+            for i in _split_burst(sig, b0, settle, NOVELTY_BUDGET, min_gap):
                 picks.append(Pick(t=float(sig.times[i]), reason="change", change=strength))
     picks.sort(key=lambda p: p.t)
     picks = _enforce_min_gap(picks, min_gap)
@@ -375,8 +384,8 @@ def select_frames(
     # Первый кадр существует всегда. _fill_gaps делит промежуток до первого пика
     # поровну и никогда не ставит точку в нуле — начало ролика с движением
     # (то есть любое интро) не показывалось вообще.
-    if not picks or picks[0].t > min_gap:
-        picks.insert(0, Pick(t=0.0, reason="grid", change=0.0))
+    if not picks or picks[0].t > start + min_gap:
+        picks.insert(0, Pick(t=start, reason="grid", change=0.0))
 
     # 3. Дедуп — ДО страховки, чтобы не съесть кадры покрытия
     picks, dropped_dup = _dedup(picks, sig, same_screen)
@@ -385,24 +394,25 @@ def select_frames(
     # даже если картинка не менялась и детектор промолчал. Важность такого момента
     # задаётся голосом, а не пикселями, и по изменению экрана её не поймать.
     for t in cues or []:
-        if 0.0 <= t <= duration and all(abs(p.t - t) > CUE_TOLERANCE for p in picks):
+        if start <= t <= duration and all(abs(p.t - t) > CUE_TOLERANCE for p in picks):
             picks.append(Pick(t=round(t, 3), reason="cue", change=0.0))
     picks.sort(key=lambda p: p.t)
 
     # 2б. Страховка по времени
-    picks = _fill_gaps(picks, duration, max_gap)
+    picks = _fill_gaps(picks, duration, max_gap, start)
 
     # 4. Бюджет
-    picks, dropped_budget = _thin(picks, cap, duration, max_gap)
+    picks, dropped_budget = _thin(picks, cap, duration, max_gap, start)
 
     return Selection(
         picks=picks,
         duration=duration,
         max_gap_target=max_gap,
-        gaps=_measure_gaps(picks, duration, max_gap),
+        gaps=_measure_gaps(picks, duration, max_gap, start),
         dropped_duplicates=dropped_dup,
         dropped_budget=dropped_budget,
         cap=cap,
+        start=start,
     )
 
 
@@ -419,7 +429,7 @@ def keep_extracted(plan: Selection, extracted_times: list[float]) -> Selection:
     return replace(
         plan,
         picks=kept,
-        gaps=_measure_gaps(kept, plan.duration, plan.max_gap_target),
+        gaps=_measure_gaps(kept, plan.duration, plan.max_gap_target, plan.start),
         missing=len(plan.picks) - len(kept),
     )
 

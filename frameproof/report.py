@@ -24,9 +24,11 @@ def coverage_lines(sel: Selection, *, frame_w: int = 0, frame_h: int = 0) -> lis
         parts.append(f"якоря по речи: {cues}")
     parts.append(f"страховка покрытия: {sel.safety_count}")
     lines.append(f"кадров: {total}  ({', '.join(parts)})")
+    span = sel.duration - sel.start
+    where = (f"окно {tc_short(sel.start)}–{tc_short(sel.duration)} ({tc_short(span)})"
+             if sel.start > 0 else tc_short(sel.duration))
     lines.append(
-        f"хронометраж: {tc_short(sel.duration)}   "
-        f"1 кадр на {sel.duration / total:.1f} с" if total else "хронометраж: —"
+        f"хронометраж: {where}   1 кадр на {span / total:.1f} с" if total else "хронометраж: —"
     )
 
     if not sel.gaps:

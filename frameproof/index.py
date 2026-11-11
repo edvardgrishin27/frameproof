@@ -143,6 +143,7 @@ def write(
     transcript=None,
     source_url: str | None = None,
     title: str = "",
+    window: tuple[float, float] | None = None,
 ) -> dict:
     os.makedirs(out_dir, exist_ok=True)
 
@@ -218,6 +219,9 @@ def write(
             ],
         },
     }
+    if window is not None:
+        # Индекс по куску ролика: вне окна кадров нет, verify это знает.
+        index["window"] = {"from": round(window[0], 3), "to": round(window[1], 3)}
     with open(os.path.join(out_dir, "index.json"), "w", encoding="utf-8") as fh:
         json.dump(index, fh, ensure_ascii=False, indent=2)
 

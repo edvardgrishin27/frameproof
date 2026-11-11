@@ -329,3 +329,53 @@ def test_заметка_к_кадру_ищется_и_видна(built, capsys):
     assert fid in found and "заметка" in found
     main(["frames", "--ids", fid, "--out", built])
     assert "таблица тарифов" in capsys.readouterr().out
+
+
+# --- Окно --from/--to ----------------------------------------------------------------
+
+def test_отбор_в_окне_держит_гарантию_внутри_окна():
+    import numpy as np
+
+    from frameproof.analyze import Signal
+    from frameproof.select import select_frames
+
+    n = 40
+    sig = Signal(times=np.linspace(600, 900, n), cells=np.zeros((n, 3, 3)),
+                 change_global=np.zeros(n), thumbs=np.zeros((n, 36, 64), dtype=np.uint8),
+                 width=320, height=180, fps=4.0)
+    sel = select_frames(sig, 900.0, start=600.0)
+    assert sel.picks[0].t == 600.0
+    assert all(600.0 <= p.t <= 900.0 for p in sel.picks)
+    assert not sel.gaps and sel.coverage == 1.0
+    assert sel.actual_max_gap <= 15.0
+
+
+def test_индекс_по_окну(tmp_path, capsys):
+    from frameproof.__main__ import main
+    from frameproof.verify import audit
+
+    clip = _clip(tmp_path / "v.mp4", video_sec=240, src="testsrc2")
+    out = str(tmp_path / "idx")
+    assert main(["index", clip, "--out", out, "--no-transcribe",
+                 "--from", "1:00", "--to", "2:00"]) == 0
+    printed = capsys.readouterr().out
+    assert "окно 1:00–2:00" in printed
+
+    rows = _rows(out)
+    assert rows and all(60.0 <= r["t"] <= 120.0 for r in rows)
+    with open(os.path.join(out, "index.json"), encoding="utf-8") as fh:
+        idx = json.load(fh)
+    assert idx["window"] == {"from": 60.0, "to": 120.0}
+    assert idx["video"]["duration_sec"] > 200
+
+    claims = audit(f"- что-то [0:30 / {rows[0]['id']}]", out)
+    assert any(f.code == "OUTSIDE_WINDOW" for f in claims[0].findings)
+
+
+def test_окно_проверяется(tmp_path, capsys):
+    from frameproof.__main__ import main
+
+    clip = _clip(tmp_path / "v.mp4", video_sec=10)
+    assert main(["index", clip, "--out", str(tmp_path / "i"), "--no-transcribe",
+                 "--from", "0:08", "--to", "0:05"]) == 2
+    assert "окно" in capsys.readouterr().err

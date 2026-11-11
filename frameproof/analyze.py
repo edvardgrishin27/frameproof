@@ -197,7 +197,7 @@ def _cell_bounds(size: int, parts: int) -> list[tuple[int, int]]:
 
 
 def analyze(info: VideoInfo, *, fps: float = ANALYZE_FPS, width: int = ANALYZE_WIDTH,
-            fast: bool = False) -> Signal:
+            fast: bool = False, start: float = 0.0, end: float | None = None) -> Signal:
     """Проход декодирования: считаем сигнал изменения и миниатюры.
 
     `fast=True` декодирует ТОЛЬКО ключевые кадры. На 38-минутном ролике это 473 кадра
@@ -205,6 +205,11 @@ def analyze(info: VideoInfo, *, fps: float = ANALYZE_FPS, width: int = ANALYZE_W
     встанет туда, где ключевой кадр поставил кодировщик, а не туда, где на экране
     дописалась мысль. Замерено: 1.7 полезного термина на кадр против 3.6.
     """
+    # Окно (--from/--to): ffmpeg читает только этот кусок, тайм-коды остаются
+    # от начала ролика, чтобы метки совпадали с плеером.
+    window = ["-ss", f"{start:.3f}"] if start > 0 else []
+    if end is not None:
+        window += ["-t", f"{max(0.0, end - start):.3f}"]
     height = round(info.height * width / info.width) if info.width else 180
     height = max(2, height - (height % 2))
     frame_bytes = width * height
@@ -214,7 +219,7 @@ def analyze(info: VideoInfo, *, fps: float = ANALYZE_FPS, width: int = ANALYZE_W
         # второй проход по файлу стоил дороже самого декодирования (5.7 с против 1.0).
         cmd = [
             which("ffmpeg"), "-v", "info",
-            "-skip_frame", "nokey", "-i", info.path,
+            "-skip_frame", "nokey", *window, "-i", info.path,
             "-vf", f"scale={width}:{height},format=gray,showinfo",
             "-fps_mode", "passthrough",
             "-f", "rawvideo", "-pix_fmt", "gray", "-",
@@ -223,6 +228,7 @@ def analyze(info: VideoInfo, *, fps: float = ANALYZE_FPS, width: int = ANALYZE_W
         cmd = [
             which("ffmpeg"),
             "-v", "error",
+            *window,
             "-i", info.path,
             "-vf", f"fps={fps},scale={width}:{height},format=gray",
             "-f", "rawvideo",
@@ -270,7 +276,7 @@ def analyze(info: VideoInfo, *, fps: float = ANALYZE_FPS, width: int = ANALYZE_W
                 cell_frac = counts / cell_area
                 glob = float(diff.sum() / (height * width))
 
-            times.append(idx / fps)
+            times.append(start + idx / fps)
             cells_seq.append(cell_frac)
             change_global.append(glob)
             thumbs.append(_thumb(cur))
@@ -288,8 +294,8 @@ def analyze(info: VideoInfo, *, fps: float = ANALYZE_FPS, width: int = ANALYZE_W
         raise RuntimeError(f"ffmpeg не отдал ни одного кадра (код {code}). {err.strip()[-300:]}")
 
     if fast:
-        times = _keyframe_times(stamps=[float(m) for m in _PTS.findall(err)],
-                                decoded=len(times))
+        times = [start + t for t in _keyframe_times(
+            stamps=[float(m) for m in _PTS.findall(err)], decoded=len(times))]
 
     span = times[-1] - times[0]
     return Signal(

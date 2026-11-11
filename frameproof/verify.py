@@ -307,6 +307,13 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
                 f"в {tc_short(frame['t'])}{хвост}",
             ))
 
+        window = index.get("window")
+        if window and not (window["from"] - TIME_TOLERANCE <= c.t <= window["to"] + TIME_TOLERANCE):
+            c.findings.append(Finding(
+                "OUTSIDE_WINDOW", FAIL,
+                f"индекс собран по окну {tc_short(window['from'])}–{tc_short(window['to'])}, "
+                f"а момент {tc_short(c.t)} вне его: кадров там нет вовсе",
+            ))
         in_gap = None if bad_tc else next(
             (g for g in gaps if g["from"] <= c.t <= g["to"]), None)
         if in_gap is not None:
