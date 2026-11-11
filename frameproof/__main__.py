@@ -384,12 +384,25 @@ def cmd_frames(args: argparse.Namespace) -> int:
         return 2
     idx = load_index(out_dir)
 
-    if args.ids:
+    if args.sheet:
+        return _frames_sheet(args, out_dir, idx)
+    if args.exact:
+        if not args.at:
+            print("--exact работает вместе с --at: frames --at 4:12 --exact", file=sys.stderr)
+            return 2
+        from .serve import exact_frame
+
+        row, fresh = exact_frame(out_dir, parse_tc(args.at))
+        if fresh:
+            print(f"снят новый кадр {row['id']} ровно в {tc_short(row['t'])} — "
+                  "текста OCR у него нет, в поиск он не попал", file=sys.stderr)
+        rows = [row]
+    elif args.ids:
         rows = frames_by_ids(out_dir, [s.strip() for s in args.ids.split(",")])
     elif args.at:
         rows = frames_near(out_dir, parse_tc(args.at), count=args.count)
     else:
-        print("укажите --at 4:12 или --ids f0043", file=sys.stderr)
+        print("укажите --at 4:12, --ids f0043 или --sheet", file=sys.stderr)
         return 2
 
     if not rows:
@@ -404,7 +417,7 @@ def cmd_frames(args: argparse.Namespace) -> int:
         print(f"[{tc_short(r['t'])} / {r['id']}] {display_path(os.path.join(out_dir, r['path']))}"
               f"  ({r['est_tokens']} токенов){mark}")
         if r.get("caption"):
-            print(f"    уже разобран: {r['caption']}")
+            print(f"    заметка агента: {r['caption']}")
     total = sum(r["est_tokens"] for r in rows)
     print()
     print(f"{len(rows)} {plural(len(rows), 'кадр', 'кадра', 'кадров')}, "
@@ -413,7 +426,42 @@ def cmd_frames(args: argparse.Namespace) -> int:
     return 0
 
 
-def _log_served(out_dir: str, rows: list[dict]) -> None:
+def _frames_sheet(args: argparse.Namespace, out_dir: str, idx: dict) -> int:
+    """Обзорный лист отрезка: 16 миниатюр по цене одного кадра."""
+    from .serve import sheet
+
+    duration = float(idx["video"]["duration_sec"])
+    t_from = parse_tc(args.t_from) if args.t_from else 0.0
+    t_to = parse_tc(args.t_to) if args.t_to else duration
+    path, rows, tokens = sheet(out_dir, t_from, t_to)
+    _log_served(out_dir, rows, via="sheet")
+    print(f"обзор {tc_short(t_from)}–{tc_short(t_to)}: {display_path(path)}  ({tokens} токенов)")
+    print("ячейки слева направо, сверху вниз:")
+    for n, r in enumerate(rows, 1):
+        print(f"  {n:>2}. [{tc_short(r['t'])} / {r['id']}]")
+    print()
+    print("Миниатюра — чтобы выбрать момент, а не чтобы читать текст. "
+          "Мелкое смотри в упор: frameproof frames --ids <id> --out " + display_path(out_dir))
+    return 0
+
+
+def cmd_caption(args: argparse.Namespace) -> int:
+    """Заметка агента к кадру: что на нём, после того как кадр посмотрели."""
+    from .index import build_search, set_caption
+
+    if not os.path.exists(os.path.join(args.out, "index.json")):
+        print(f"нет индекса в {display_path(args.out)}", file=sys.stderr)
+        return 2
+    if not set_caption(args.out, args.frame_id, args.text.strip()):
+        print(f"кадра {args.frame_id} в индексе нет", file=sys.stderr)
+        return 1
+    build_search(args.out)
+    print(f"заметка к {args.frame_id} записана, теперь она находится поиском "
+          "(с пометкой «заметка агента» — это не доказательство)")
+    return 0
+
+
+def _log_served(out_dir: str, rows: list[dict], *, via: str = "frames") -> None:
     """Журнал выданных кадров.
 
     Нужен ровно для одной проверки: утверждение о кадре, который агенту ни разу не
@@ -426,7 +474,7 @@ def _log_served(out_dir: str, rows: list[dict]) -> None:
         with open(os.path.join(out_dir, "served.jsonl"), "a", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(
-                    {"id": r["id"], "t": r["t"], "at": round(time.time(), 3)},
+                    {"id": r["id"], "t": r["t"], "at": round(time.time(), 3), "via": via},
                     ensure_ascii=False,
                 ) + "\n")
     except OSError:
@@ -681,7 +729,19 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--at", help="момент: 4:12 / 1:04:12 / 252")
     f.add_argument("--ids", help="идентификаторы через запятую: f0043,f0044")
     f.add_argument("--count", type=int, default=1, help="сколько кадров вокруг момента")
+    f.add_argument("--exact", action="store_true",
+                   help="снять кадр ровно в момент --at, если готового рядом нет")
+    f.add_argument("--sheet", action="store_true",
+                   help="обзорный лист: 16 миниатюр отрезка одной картинкой")
+    f.add_argument("--from", dest="t_from", help="начало отрезка для --sheet")
+    f.add_argument("--to", dest="t_to", help="конец отрезка для --sheet")
     f.set_defaults(func=cmd_frames)
+
+    c = sub.add_parser("caption", help="записать заметку к кадру после просмотра")
+    c.add_argument("frame_id", help="например f0043")
+    c.add_argument("text", help="что на кадре, своими словами")
+    c.add_argument("--out", required=True, help="папка индекса")
+    c.set_defaults(func=cmd_caption)
 
     r = sub.add_parser("report", help="показать покрытие готового индекса")
     r.add_argument("--out", required=True)

@@ -39,6 +39,7 @@ def extract(
     *,
     width: int = DEFAULT_WIDTH,
     quality: int = JPEG_QUALITY,
+    first_id: int = 0,
 ) -> list[ExtractedFrame]:
     os.makedirs(out_dir, exist_ok=True)
     width = min(width, info.width) if info.width else width
@@ -48,7 +49,7 @@ def extract(
     frames: list[ExtractedFrame] = []
     last_error = ""
     for i, pick in enumerate(picks):
-        fid = f"f{i:04d}"
+        fid = f"f{first_id + i:04d}"
         path = os.path.join(out_dir, f"{fid}.jpg")
         # -ss ДО -i это input seeking: прыжок по ключевым кадрам, а не декод с начала.
         # check=False: один неснятый кадр — это участок без кадра в отчёте покрытия,

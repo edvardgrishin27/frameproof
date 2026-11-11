@@ -261,3 +261,71 @@ def test_оборванное_извлечение_звука_не_станов�
 
     monkeypatch.setattr(util, "run", real_run)
     assert cli._extract_audio(src, out) is not None
+
+
+# --- frames: точный кадр, обзорный лист, заметка ----------------------------------
+
+@pytest.fixture
+def built(tmp_path):
+    clip = _clip(tmp_path / "v.mp4", video_sec=240, src="testsrc2")
+    out = str(tmp_path / "idx")
+    assert _index(clip, out) == 0
+    return out
+
+
+def _rows(out):
+    with open(os.path.join(out, "frames.jsonl"), encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def test_точный_кадр_снимается_в_названный_момент(built, capsys):
+    """Ближайший готовый кадр может стоять в 8–15 с от нужного момента."""
+    from frameproof.__main__ import main
+
+    before = {r["id"] for r in _rows(built)}
+    capsys.readouterr()
+    assert main(["frames", "--at", "1:47.5", "--exact", "--out", built]) == 0
+    out = capsys.readouterr().out
+
+    new = [r for r in _rows(built) if r["id"] not in before]
+    assert len(new) == 1 and abs(new[0]["t"] - 107.5) < 0.01
+    assert new[0]["reason"] == "exact"
+    assert os.path.exists(os.path.join(built, new[0]["path"]))
+    assert new[0]["id"] in out
+    # старые номера не сдвинулись — разборы по ним остаются верными
+    assert before <= {r["id"] for r in _rows(built)}
+
+
+def test_точный_кадр_рядом_с_готовым_не_дублируется(built):
+    from frameproof.__main__ import main
+
+    t = _rows(built)[3]["t"]
+    n = len(_rows(built))
+    main(["frames", "--at", str(round(t, 2)), "--exact", "--out", built])
+    assert len(_rows(built)) == n
+
+
+def test_обзорный_лист_одной_картинкой(built, capsys):
+    from frameproof.__main__ import main
+
+    capsys.readouterr()
+    assert main(["frames", "--sheet", "--from", "1:00", "--to", "3:00", "--out", built]) == 0
+    out = capsys.readouterr().out
+    sheet = next(w for w in out.split() if w.endswith(".jpg"))
+    assert os.path.exists(sheet)
+    assert "1196 токенов" in out
+    # легенда: какие кадры в ячейках
+    assert out.count("/ f0") >= 4
+
+
+def test_заметка_к_кадру_ищется_и_видна(built, capsys):
+    from frameproof.__main__ import main
+
+    fid = _rows(built)[2]["id"]
+    assert main(["caption", fid, "таблица тарифов на слайде", "--out", built]) == 0
+    capsys.readouterr()
+    main(["search", "тарифов", "--out", built])
+    found = capsys.readouterr().out
+    assert fid in found and "заметка" in found
+    main(["frames", "--ids", fid, "--out", built])
+    assert "таблица тарифов" in capsys.readouterr().out

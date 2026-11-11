@@ -40,7 +40,9 @@ class Hit:
     ref: str           # 'seg#142' | 'f0043'
 
     def line(self) -> str:
-        return f"[{tc_short(self.t)} / {self.ref}] {self.kind}: {self.text}"
+        # Заметка — слова агента о кадре, а не доказательство. Помечаем это прямо.
+        kind = "note (заметка агента)" if self.kind == "note" else self.kind
+        return f"[{tc_short(self.t)} / {self.ref}] {kind}: {self.text}"
 
 
 
@@ -87,6 +89,27 @@ def _fragment(source_url: str | None, t: float) -> str:
         return f"{source_url}{sep}t={sec}"
     return f"{source_url or ''}#t={sec}"
 
+
+
+def frame_row(f, *, out_dir: str, source_url: str | None, segment_i: int | None) -> dict:
+    """Строка frames.jsonl для снятого кадра. Одна форма для индекса и для --exact."""
+    return {
+        "id": f.id,
+        "t": round(f.t, 3),
+        "tc": tc(f.t),
+        "path": os.path.relpath(f.path, out_dir),
+        "w": f.width,
+        "h": f.height,
+        "bytes": f.bytes,
+        "est_tokens": effective_tokens(f.width, f.height),
+        "reason": f.reason,
+        "segment_i": segment_i,
+        # Заметка агента о кадре: пишется командой `caption` после просмотра.
+        # На второй вопрос про тот же момент картинка уже не грузится.
+        "caption": None,
+        "ocr": None,
+        "url": _fragment(source_url, f.t),
+    }
 
 
 def build_fingerprint(*, duration: float, frame_count: int, source: str,
@@ -147,29 +170,9 @@ def write(
     with open(frames_path, "w", encoding="utf-8") as fh:
         for f in frames:
             per_frame_tokens = effective_tokens(f.width, f.height)
-            fh.write(
-                json.dumps(
-                    {
-                        "id": f.id,
-                        "t": round(f.t, 3),
-                        "tc": tc(f.t),
-                        "path": os.path.relpath(f.path, out_dir),
-                        "w": f.width,
-                        "h": f.height,
-                        "bytes": f.bytes,
-                        "est_tokens": per_frame_tokens,
-                        "reason": f.reason,
-                        "segment_i": segment_at(f.t),
-                        # Заполняется ПОСЛЕ того, как агент один раз посмотрел кадр.
-                        # На второй вопрос про тот же момент картинка уже не грузится.
-                        "caption": None,
-                        "ocr": None,
-                        "url": _fragment(source_url, f.t),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
+            row = frame_row(f, out_dir=out_dir, source_url=source_url,
+                            segment_i=segment_at(f.t))
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     index = {
         "schema_version": SCHEMA_VERSION,
@@ -179,6 +182,8 @@ def write(
         "video": {
             "title": title,
             "source_url": source_url,
+            # Откуда снимать точный кадр по запросу (`frames --exact`).
+            "path": os.path.abspath(info.path),
             "duration_sec": round(info.duration, 3),
             "width": info.width,
             "height": info.height,
@@ -298,6 +303,8 @@ def _rows(out_dir: str):
                     r = json.loads(line)
                     if r.get("ocr"):
                         yield "screen", float(r["t"]), r["id"], r["ocr"]
+                    if r.get("caption"):
+                        yield "note", float(r["t"]), r["id"], r["caption"]
 
 
 #: Токенайзер trigram физически не умеет искать короче трёх символов.
