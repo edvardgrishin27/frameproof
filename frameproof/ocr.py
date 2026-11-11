@@ -127,10 +127,16 @@ def _build(cache_dir: str, errors: list[str] | None = None) -> str | None:
         src = os.path.join(tmp, "ocr.swift")
         with open(src, "w", encoding="utf-8") as fh:
             fh.write(_SWIFT_SRC)
+        # Собираем во временный файл и переносим целиком: бинарь общий на все
+        # индексы, и параллельный index не должен запустить недособранный файл.
+        tmp_bin = os.path.join(tmp, _BIN_NAME)
         proc = subprocess.run(
-            ["swiftc", "-O", "-o", binary, src],
+            ["swiftc", "-O", "-o", tmp_bin, src],
             capture_output=True, text=True,
         )
+        if proc.returncode == 0 and os.path.exists(tmp_bin):
+            shutil.copy2(tmp_bin, binary + ".part")
+            os.replace(binary + ".part", binary)
         if proc.returncode != 0 or not os.path.exists(binary):
             if errors is not None:
                 errors.append("swiftc не собрал распознаватель: "

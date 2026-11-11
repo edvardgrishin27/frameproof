@@ -19,9 +19,11 @@
 
 from __future__ import annotations
 
-import json
+import contextlib
 import hashlib
+import json
 import os
+import time
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -388,6 +390,41 @@ def frames_by_ids(out_dir: str, ids: list[str]) -> list[dict]:
     return out
 
 
+@contextlib.contextmanager
+def index_lock(out_dir: str, *, timeout: float = 30.0):
+    """Один писатель frames.jsonl за раз.
+
+    `caption` переписывает файл целиком, `frames --exact` дописывает строку и берёт
+    следующий номер. Запущенные одновременно, они теряли строки и выдавали один
+    номер двум кадрам. Замок — файл, созданный с O_EXCL: работает и на Windows.
+    """
+    path = os.path.join(out_dir, ".frames.lock")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            # Замок старше таймаута оставил упавший процесс — снимаем.
+            try:
+                if time.time() - os.path.getmtime(path) > timeout:
+                    os.remove(path)
+                    continue
+            except OSError:
+                continue
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"индекс занят другим процессом дольше {timeout:.0f} с: {path}")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(fd)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 def set_caption(out_dir: str, frame_id: str, caption: str) -> bool:
     """Записать описание кадра обратно в индекс.
 
@@ -395,17 +432,23 @@ def set_caption(out_dir: str, frame_id: str, caption: str) -> bool:
     про тот же момент отвечается по тексту, без повторной загрузки изображения.
     """
     path = os.path.join(out_dir, "frames.jsonl")
-    rows: list[dict] = []
-    found = False
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            r = json.loads(line)
-            if r["id"] == frame_id:
-                r["caption"] = caption
-                found = True
-            rows.append(r)
-    if found:
-        with open(path, "w", encoding="utf-8") as fh:
-            for r in rows:
-                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    with index_lock(out_dir):
+        rows: list[dict] = []
+        found = False
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                r = json.loads(line)
+                if r["id"] == frame_id:
+                    r["caption"] = caption
+                    found = True
+                rows.append(r)
+        if found:
+            # Через временный файл: читатель не увидит недописанный индекс.
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            os.replace(tmp, path)
     return found

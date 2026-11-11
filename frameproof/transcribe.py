@@ -141,10 +141,15 @@ _XML_ATTR = re.compile(r'(\w+)="([^"]*)"')
 def _xml_time(value: str) -> float | None:
     """Время TTML: `00:00:01.500`, `1.5s`, `1500ms`."""
     value = value.strip()
-    if value.endswith("ms"):
-        return float(value[:-2]) / 1000
-    if value.endswith("s"):
-        return float(value[:-1])
+    try:
+        if value.endswith("ms"):
+            return float(value[:-2]) / 1000
+        if value.endswith("s"):
+            return float(value[:-1])
+    except ValueError:
+        return None
+    # Тики (`10000000t`) и прочие редкие формы без tickRate не прочитать —
+    # такую реплику пропускаем, а не роняем весь разбор.
     return _vtt_time(value if "." in value or "," in value else value + ".000")
 
 

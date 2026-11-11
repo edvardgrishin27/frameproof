@@ -299,3 +299,45 @@ def test_план_говорит_сколько_пропущено(index, tmp_pa
     answer.write_text("\n".join(f"- У{i}. [1:00 / f0001]" for i in range(5)), encoding="utf-8")
     main(["verify", str(answer), "--out", index, "--plan", "--limit", "2"])
     assert "пропущено 3" in capsys.readouterr().err
+
+
+# --- По ревью: цифры, окно, миниатюры, проза --------------------------------------
+
+@pytest.mark.parametrize("цитата, на_экране", [
+    ("Cursor 2.1.154", "Cursor 2.1.153"),
+    ("$29.3B", "$29.8B"),
+    ("timeout 3000ms", "timeout 3600ms"),
+    ("Claude-3.5 Sonnet", "Claude-3.7 Sonnet"),
+    ("npm install foo", "npm install bar"),
+])
+def test_подмена_цифр_и_коротких_слов_ловится(цитата, на_экране):
+    """Нечёткое сравнение пропускало подмену версий и цифр — главный риск фактчека."""
+    from frameproof.verify import _quote_supported
+
+    assert not _quote_supported(цитата, на_экране)
+
+
+def test_нечитаемая_метка_не_получает_ложного_вне_окна(index):
+    path = os.path.join(index, "index.json")
+    data = json.load(open(path, encoding="utf-8"))
+    data["window"] = {"from": 50.0, "to": 200.0}
+    json.dump(data, open(path, "w", encoding="utf-8"))
+    claims = audit("- опечатка [1:75 / f0001]", index)
+    assert "OUTSIDE_WINDOW" not in codes(claims[0])
+
+
+def test_кадр_виденный_только_миниатюрой_не_считается_открытым(index):
+    with open(os.path.join(index, "served.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": "f0002", "t": 120.0, "at": 2.0, "via": "sheet"}) + "\n")
+    claims = audit("- Тут таблица. [2:00 / f0002]", index)
+    finding = next(f for f in claims[0].findings if f.code == "NEVER_OPENED")
+    assert "миниатюр" in finding.detail
+
+
+@pytest.mark.parametrize("проза", [
+    "Открытый код — это хорошо.",
+    "Как видно из цифр, рост замедлился.",
+    "The show shows growth.",
+])
+def test_обычная_проза_не_untagged(проза):
+    assert extract_claims(проза) == []

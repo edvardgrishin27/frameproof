@@ -36,7 +36,7 @@ QUOTE_OVERLAP = 0.6
 #: Слово такой длины и длиннее, которого нет в тексте даже с опечаткой, — выдумка,
 #: какая бы доля остальных слов ни совпала. `class Dragon(Reptile)` при
 #: `class Snake(Reptile)` давал два слова из трёх и проходил по доле.
-DISTINCT_WORD = 4
+DISTINCT_WORD = 3
 
 #: С какой длины слово сверяется нечётко и насколько похожим оно должно быть.
 #: OCR путает отдельные буквы (`rn`↔`m`, `l`↔`I`), и одна буква мимо в длинном
@@ -64,11 +64,14 @@ _QUOTES = re.compile(
 )
 
 #: Слова, по которым строка без метки похожа на утверждение об экране.
+#: Только обороты, которые прямо указывают на экран: отдельные «видно», «открыт»,
+#: «shows» встречаются в обычной прозе («открытый код», «как видно из цифр») и
+#: давали ложный UNTAGGED.
 _SCREEN_WORDS = (
-    "на экран", "на слайд", "на кадр", "на скрин", "показан", "показыва", "видно",
-    "открыт", "в терминал", "в интерфейс", "в окне", "кнопк", "на странице",
-    "on screen", "on the screen", "the slide", "is shown", "shows", "displayed",
-    "in the terminal", "the window", "button",
+    "на экран", "на слайд", "на кадр", "на скрин", "в терминал", "в интерфейс",
+    "в окне ", "на странице", "кнопк",
+    "on screen", "on the screen", "on the slide", "in the terminal", "is displayed",
+    "the button",
 )
 
 _WORD = re.compile(r"[\w./:-]+", re.UNICODE)
@@ -127,7 +130,10 @@ def _word_found(word: str, pool: set[str]) -> bool:
     """Слово есть в тексте — точно или с одной-двумя буквами мимо (ошибка OCR)."""
     if word in pool:
         return True
-    if len(word) < FUZZY_MIN_LEN:
+    # Цифры и версии — только точно: «2.1.154» против «2.1.153» отличается одной
+    # цифрой, и нечёткое сравнение принимало это за ошибку OCR. Для фактчека
+    # подмена числа — главный риск, а не мелочь.
+    if len(word) < FUZZY_MIN_LEN or any(ch.isdigit() for ch in word):
         return False
     return any(
         abs(len(w) - len(word)) <= 2 and SequenceMatcher(None, word, w).ratio() >= FUZZY_RATIO
@@ -153,7 +159,8 @@ def _quote_supported(quote: str, haystack: str) -> bool:
         return True          # в цитате одни знаки — судить не по чему
     pool = set(_words(haystack))
     found = [_word_found(w, pool) for w in q_words]
-    if any(not ok and len(w) >= DISTINCT_WORD for w, ok in zip(q_words, found)):
+    if any(not ok and (len(w) >= DISTINCT_WORD or any(ch.isdigit() for ch in w))
+           for w, ok in zip(q_words, found)):
         return False
     return sum(found) / len(q_words) >= QUOTE_OVERLAP
 
@@ -268,7 +275,10 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
         index = json.load(fh)
     frames = {r["id"]: r for r in _load_jsonl(os.path.join(index_dir, "frames.jsonl"))}
     segments = _load_jsonl(os.path.join(index_dir, "segments.jsonl"))
-    served = {r["id"] for r in _load_jsonl(os.path.join(index_dir, "served.jsonl"))}
+    served_rows = _load_jsonl(os.path.join(index_dir, "served.jsonl"))
+    # Миниатюра в обзорном листе — не просмотр кадра: текст на ней не читается.
+    served = {r["id"] for r in served_rows if r.get("via") != "sheet"}
+    thumbs = {r["id"] for r in served_rows if r.get("via") == "sheet"}
     gaps = index.get("coverage", {}).get("gaps", [])
 
     # Сборку разбора сверяем ДО остальных проверок: если она чужая, номера кадров
@@ -308,7 +318,7 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
             ))
 
         window = index.get("window")
-        if window and not (window["from"] - TIME_TOLERANCE <= c.t <= window["to"] + TIME_TOLERANCE):
+        if window and not bad_tc and not (window["from"] - TIME_TOLERANCE <= c.t <= window["to"] + TIME_TOLERANCE):
             c.findings.append(Finding(
                 "OUTSIDE_WINDOW", FAIL,
                 f"индекс собран по окну {tc_short(window['from'])}–{tc_short(window['to'])}, "
@@ -323,11 +333,12 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
             ))
 
         if frame is not None and c.frame_id not in served:
-            c.findings.append(Finding(
-                "NEVER_OPENED", WARN,
-                f"кадр {c.frame_id} существует, но команда frames его ни разу не "
-                f"выдавала — похоже, утверждение сделано не глядя",
-            ))
+            детали = (f"кадр {c.frame_id} видели только миниатюрой в обзорном листе — "
+                      f"для утверждения его надо открыть в упор"
+                      if c.frame_id in thumbs else
+                      f"кадр {c.frame_id} существует, но команда frames его ни разу не "
+                      f"выдавала — похоже, утверждение сделано не глядя")
+            c.findings.append(Finding("NEVER_OPENED", WARN, детали))
 
         # Время не прочитано — сверять цитату с речью «рядом» не с чем.
         for quote in ([] if bad_tc else c.quotes):

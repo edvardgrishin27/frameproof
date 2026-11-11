@@ -16,13 +16,16 @@ import os
 
 from .budget import DEFAULT_WIDTH, effective_tokens
 from .extract import ExtractedFrame, contact_sheet, extract
-from .index import frame_row, load_index
+from .index import frame_row, index_lock, load_index
 from .probe import probe
 from .select import Pick
 from .util import tc_short
 
 #: Готовый кадр ближе этого к запрошенному моменту — тот же самый, новый не нужен.
 EXACT_SAME = 0.25
+
+#: Ближе этого к концу ролика кадр не снимается.
+END_MARGIN = 0.1
 
 #: Сколько миниатюр в обзорном листе и в сколько столбцов.
 SHEET_CELLS = 16
@@ -60,9 +63,16 @@ def exact_frame(out_dir: str, t: float) -> tuple[dict, bool]:
     """Кадр ровно в момент t. Возвращает строку индекса и признак «снят только что»."""
     idx = load_index(out_dir)
     duration = float((idx.get("video") or {}).get("duration_sec") or 0.0)
-    if duration and not 0.0 <= t <= duration:
-        raise ValueError(f"момент {tc_short(t)} за пределами ролика ({tc_short(duration)})")
+    # У самого конца ffmpeg кадра не отдаёт: последний кадр начинается раньше.
+    if duration and not 0.0 <= t <= duration - END_MARGIN:
+        raise ValueError(f"момент {tc_short(t)} за концом ролика или вплотную к нему "
+                         f"(ролик {tc_short(duration)})")
 
+    with index_lock(out_dir):
+        return _exact_locked(out_dir, idx, t)
+
+
+def _exact_locked(out_dir: str, idx: dict, t: float) -> tuple[dict, bool]:
     rows = _rows(out_dir)
     nearest = min(rows, key=lambda r: abs(r["t"] - t), default=None)
     if nearest is not None and abs(nearest["t"] - t) <= EXACT_SAME:
@@ -92,7 +102,10 @@ def sheet(out_dir: str, t_from: float, t_to: float, *,
     rows = sorted((r for r in _rows(out_dir) if t_from <= r["t"] <= t_to),
                   key=lambda r: r["t"])
     if not rows:
-        raise ValueError(f"на отрезке {tc_short(t_from)}–{tc_short(t_to)} кадров нет")
+        window = (load_index(out_dir).get("window") or {})
+        hint = (f" Индекс собран по окну {tc_short(window['from'])}–{tc_short(window['to'])}."
+                if window else "")
+        raise ValueError(f"на отрезке {tc_short(t_from)}–{tc_short(t_to)} кадров нет.{hint}")
     if len(rows) > cells:
         step = len(rows) / cells
         rows = [rows[int(k * step)] for k in range(cells)]

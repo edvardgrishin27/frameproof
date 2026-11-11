@@ -385,3 +385,28 @@ def test_окно_проверяется(tmp_path, capsys):
     assert main(["index", clip, "--out", str(tmp_path / "i"), "--no-transcribe",
                  "--from", "0:08", "--to", "0:05"]) == 2
     assert "окно" in capsys.readouterr().err
+
+
+def test_точный_кадр_в_самом_конце_понятная_ошибка(built, capsys):
+    from frameproof.__main__ import main
+
+    with open(os.path.join(built, "index.json"), encoding="utf-8") as fh:
+        end = json.load(fh)["video"]["duration_sec"]
+    assert main(["frames", "--at", str(end), "--exact", "--out", built]) == 1
+    err = capsys.readouterr().err
+    assert "за концом" in err or "за пределами" in err
+    assert "Command" not in err
+
+
+def test_ttml_в_тиках_не_роняет_разбор():
+    from frameproof.transcribe import parse_timedtext_xml
+
+    raw = b'<tt><body><p begin="10000000t" end="20000000t">x</p><p begin="1s" end="2s">ok</p></body></tt>'
+    assert [s.text for s in parse_timedtext_xml(raw)] == ["ok"]
+
+
+def test_путь_к_видео_с_точкой_в_папке_не_ссылка():
+    from frameproof.__main__ import _похоже_на_ссылку
+
+    assert not _похоже_на_ссылку("my.videos/clip.mp4")
+    assert _похоже_на_ссылку("loom.com/share/abc")
