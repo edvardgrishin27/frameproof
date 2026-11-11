@@ -43,6 +43,10 @@ def _чинить_вывод() -> None:
 _чинить_вывод()
 
 
+#: На сколько секунд анализ может не дойти до конца ролика, прежде чем это обрыв.
+DECODE_SLACK = 5.0
+
+
 def _work_dir(target: str, explicit: str | None) -> str:
     if explicit:
         return explicit
@@ -194,7 +198,19 @@ def cmd_index(args: argparse.Namespace) -> int:
         print("быстрый проход: только ключевые кадры...", file=sys.stderr)
     else:
         print("анализирую изменения экрана...", file=sys.stderr)
-    sig = analyze(info, fast=args.fast)
+    from .analyze import FastModeUnreliable
+
+    try:
+        sig = analyze(info, fast=args.fast)
+    except FastModeUnreliable as exc:
+        print(f"⚠ быстрый проход ненадёжен ({exc}) — делаю полный", file=sys.stderr)
+        sig = analyze(info, fast=False)
+    # Декод мог оборваться на битом файле: анализ дошёл до середины и замолчал.
+    # Кадры дальше поставит только сетка — об этом надо сказать вслух.
+    if not args.fast and len(sig.times) and info.duration - sig.times[-1] > DECODE_SLACK:
+        print(f"⚠ декод оборвался на {tc_short(sig.times[-1])} из {tc_short(info.duration)}: "
+              "дальше смены экрана не отслеживались, кадры там только по сетке, "
+              "а снять их может не выйти — смотри отчёт покрытия", file=sys.stderr)
 
     cues: list[float] = []
     if transcript is not None and not args.no_cues:
@@ -283,7 +299,8 @@ def cmd_index(args: argparse.Namespace) -> int:
     print(f"индекс: {display_path(out_dir)}")
     print(f"дальше:  frameproof search \"<запрос>\" --out {display_path(out_dir)}")
     print(f"         frameproof frames --at 4:12 --out {display_path(out_dir)}")
-    return 0 if index["coverage"]["complete"] else 0
+    # Код 0 и при неполном покрытии: индекс собран, а разрывы названы в отчёте.
+    return 0
 
 
 def _nonempty(transcript, source: str, args: argparse.Namespace):
@@ -536,6 +553,10 @@ def cmd_report(args: argparse.Namespace) -> int:
     from .index import load_index
 
     out_dir = args.out
+    if not os.path.exists(os.path.join(out_dir, "index.json")):
+        print(f"нет индекса в {display_path(out_dir)}. Сначала: frameproof index <url|файл>",
+              file=sys.stderr)
+        return 2
     idx = load_index(out_dir)
     cov = idx["coverage"]
     v, f = idx["video"], idx["frames"]
@@ -584,13 +605,17 @@ def cmd_doctor(_: argparse.Namespace) -> int:
         print("  ✗ numpy    НЕ НАЙДЕН — pip install numpy")
         ok = False
     for mod, why in (("mlx_whisper", "быстрая расшифровка на Apple Silicon"),
-                     ("whisper", "расшифровка везде"),
                      ("yt_dlp", "загрузка по ссылке (нужен только для ссылок)")):
         try:
             __import__(mod)
             print(f"  ✓ {mod:<12} {why}")
         except ImportError:
             print(f"  · {mod:<12} нет — {why} недоступна")
+    # openai-whisper вызывается бинарём из PATH, а не модулем: проверяем то, что зовём.
+    whisper_bin = shutil.which("whisper")
+    print(f"  {'✓' if whisper_bin else '·'} whisper      "
+          + (f"{whisper_bin} — расшифровка везде" if whisper_bin
+             else "нет бинаря — расшифровка везде недоступна (pip install -U openai-whisper)"))
     from . import ocr as ocr_mod
     print(f"  {'✓' if ocr_mod.available() else '·'} Apple Vision OCR "
           f"{'доступен' if ocr_mod.available() else 'нет swiftc — OCR пропустится'}")

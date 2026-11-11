@@ -27,7 +27,9 @@ import locale
 import os
 import shlex
 import shutil
+import hashlib
 import subprocess
+import sys
 import tempfile
 
 _SWIFT_SRC = r"""
@@ -57,6 +59,20 @@ for path in args {
 """
 
 _BIN_NAME = "frameproof_ocr"
+
+#: Сколько ждать одну партию распознавания, секунды. Без потолка зависший
+#: распознаватель вешал весь index навсегда.
+OCR_TIMEOUT = 600
+
+
+def binary_cache_dir() -> str:
+    """Общая папка для собранного распознавателя — одна на все индексы.
+
+    Раньше бинарь собирался заново в каждой папке индекса: лишние 10–20 секунд
+    swiftc на каждом новом ролике.
+    """
+    base = os.environ.get("FRAMEPROOF_HOME") or os.path.join(os.path.expanduser("~"), ".frameproof")
+    return os.path.join(base, ".cache")
 
 
 def available(command: str | None = None) -> bool:
@@ -98,11 +114,13 @@ def _decode(raw: bytes) -> str:
         return raw.decode(locale.getpreferredencoding(False), errors="replace")
 
 
-def _build(cache_dir: str) -> str | None:
+def _build(cache_dir: str, errors: list[str] | None = None) -> str | None:
     if not available():
         return None
     os.makedirs(cache_dir, exist_ok=True)
-    binary = os.path.join(cache_dir, _BIN_NAME)
+    # Имя с отпечатком исходника: новая версия распознавателя не возьмёт старый бинарь.
+    tag = hashlib.sha256(_SWIFT_SRC.encode("utf-8")).hexdigest()[:8]
+    binary = os.path.join(cache_dir, f"{_BIN_NAME}-{tag}")
     if os.path.exists(binary):
         return binary
     with tempfile.TemporaryDirectory() as tmp:
@@ -114,11 +132,15 @@ def _build(cache_dir: str) -> str | None:
             capture_output=True, text=True,
         )
         if proc.returncode != 0 or not os.path.exists(binary):
+            if errors is not None:
+                errors.append("swiftc не собрал распознаватель: "
+                              + (proc.stderr or "").strip()[-300:])
             return None
     return binary
 
 
-def recognize(paths: list[str], *, cache_dir: str, command: str | None = None) -> dict[str, str]:
+def recognize(paths: list[str], *, cache_dir: str, command: str | None = None,
+              errors: list[str] | None = None) -> dict[str, str]:
     """Путь к кадру -> распознанный текст. Пустой словарь, если OCR недоступен."""
     if not paths:
         return {}
@@ -127,7 +149,7 @@ def recognize(paths: list[str], *, cache_dir: str, command: str | None = None) -
         if not argv:
             return {}
     else:
-        binary = _build(cache_dir)
+        binary = _build(cache_dir, errors)
         if not binary:
             return {}
         argv = [binary]
@@ -138,8 +160,22 @@ def recognize(paths: list[str], *, cache_dir: str, command: str | None = None) -
         chunk = paths[i : i + 60]
         # Без text=True: декодируем сами, иначе на Windows ответ читается системной
         # ANSI и UTF-8 молча превращается в кашу.
-        proc = subprocess.run([*argv, *chunk], capture_output=True)
+        try:
+            proc = subprocess.run([*argv, *chunk], capture_output=True, timeout=OCR_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            if errors is not None:
+                errors.append(f"партия из {len(chunk)} кадров не уложилась в {OCR_TIMEOUT} с")
+            continue
+        except OSError as exc:
+            if errors is not None:
+                errors.append(f"не запустился: {exc}")
+            continue
         if proc.returncode != 0:
+            # Раньше партия молча пропускалась, и 60 кадров оставались без текста.
+            if errors is not None:
+                tail = _decode(proc.stderr or b"").strip()[-300:]
+                errors.append(f"партия из {len(chunk)} кадров: код {proc.returncode}"
+                              + (f", {tail}" if tail else ""))
             continue
         for line in _decode(proc.stdout).splitlines():
             path, _, text = line.partition("\t")
@@ -172,7 +208,11 @@ def annotate_index(
     targets = images or [os.path.join(out_dir, r["path"]) for r in rows]
     if len(targets) != len(rows):
         targets = [os.path.join(out_dir, r["path"]) for r in rows]
-    texts = recognize(targets, cache_dir=os.path.join(out_dir, ".cache"), command=command)
+    errors: list[str] = []
+    texts = recognize(targets, cache_dir=binary_cache_dir(), command=command, errors=errors)
+    if errors:
+        print("⚠ распознавание не отработало: " + "; ".join(errors[:3])
+              + (f" и ещё {len(errors) - 3}" if len(errors) > 3 else ""), file=sys.stderr)
     if not texts:
         return 0
 

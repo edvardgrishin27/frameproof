@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 
 from .util import run, which
@@ -57,6 +58,9 @@ def _rotation(stream: dict) -> int:
 
 
 def probe(path: str) -> VideoInfo:
+    # Имя, начинающееся с минуса, ffprobe прочитал бы как ключ командной строки.
+    if path.startswith("-"):
+        path = os.path.join(os.curdir, path)
     proc = run(
         [
             which("ffprobe"),
@@ -68,8 +72,16 @@ def probe(path: str) -> VideoInfo:
             "-show_entries", "format=duration",
             "-of", "json",
             path,
-        ]
+        ],
+        check=False,
     )
+    if proc.returncode != 0:
+        # Сырой дамп команды человеку ничего не говорит. Причина — в stderr ffprobe:
+        # «moov atom not found» значит, что файл обрезан или ещё дописывается.
+        why = (proc.stderr or "").strip().splitlines()
+        raise ValueError(f"ffprobe не смог прочитать файл {path}: "
+                         f"{why[-1] if why else 'код ' + str(proc.returncode)}. "
+                         "Файл повреждён, обрезан или ещё записывается?")
     data = json.loads(proc.stdout or "{}")
     streams = data.get("streams") or []
     if not streams:

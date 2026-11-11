@@ -484,6 +484,11 @@ def _pick_subtitle(info: dict, langs=SUB_LANGS) -> tuple[str | None, str | None,
     return None, None, False
 
 
+#: Полоса загрузки yt-dlp — для человека у терминала. Агенту она сыпала в контекст
+#: десятки строк «[download] 3.9% …» и стоила токенов. Не терминал — без неё.
+_ТИХО = {} if sys.stderr.isatty() else {"noprogress": True}
+
+
 def fetch(url: str, work_dir: str, *, max_height: int = 1080,
           langs=SUB_LANGS, want_video: bool = True, want_audio: bool = True,
           cookies_from_browser: str | None = None,
@@ -547,7 +552,7 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
             def собрать_аудио(формат):
                 def взять(доп):
                     with yt_dlp.YoutubeDL({
-                        "quiet": True, "no_warnings": True,
+                        "quiet": True, "no_warnings": True, **_ТИХО,
                         "outtmpl": audio_path, "format": формат,
                         **proxy_opts, **cookies_opts, **доп,
                     }) as ydl:
@@ -581,6 +586,7 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
             opts = {
                 "quiet": True,
                 "no_warnings": True,
+                **_ТИХО,
                 "outtmpl": video_path,
                 **cookies_opts,
             }

@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import unicodedata
 
 
@@ -13,14 +14,21 @@ class ToolMissing(RuntimeError):
     """Внешний бинарник не найден. Сообщаем человеку, а не падаем стеком."""
 
 
+def _install_hint(tool: str) -> str:
+    """Как поставить инструмент на ЭТОЙ системе. Раньше везде советовался brew."""
+    if tool not in ("ffmpeg", "ffprobe"):
+        return f"{tool} не найден в PATH"
+    if sys.platform == "darwin":
+        return f"{tool} не найден. Установите: brew install ffmpeg"
+    if sys.platform.startswith("win"):
+        return f"{tool} не найден. Установите: winget install Gyan.FFmpeg"
+    return f"{tool} не найден. Установите: sudo apt install ffmpeg (или пакет вашей системы)"
+
+
 def which(tool: str) -> str:
     path = shutil.which(tool)
     if not path:
-        raise ToolMissing(
-            f"{tool} не найден. Установите: brew install {tool}"
-            if tool in ("ffmpeg", "ffprobe", "yt-dlp")
-            else f"{tool} не найден в PATH"
-        )
+        raise ToolMissing(_install_hint(tool))
     return path
 
 

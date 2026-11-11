@@ -62,6 +62,22 @@ THUMB_W, THUMB_H = 64, 36
 _PTS = re.compile(r"pts_time:([0-9.]+)")
 
 
+class FastModeUnreliable(RuntimeError):
+    """Быстрый проход не смог надёжно привязать кадры ко времени."""
+
+
+def _keyframe_times(*, stamps: list[float], decoded: int) -> list[float]:
+    """Тайм-коды ключевых кадров из showinfo.
+
+    Если меток меньше, чем кадров, честно сопоставить их нельзя. Раньше хвост
+    добивался номером кадра, делённым на 4 к/с, — для ключевых кадров это не время.
+    """
+    if len(stamps) < decoded:
+        raise FastModeUnreliable(
+            f"ffmpeg дал {len(stamps)} меток времени на {decoded} ключевых кадров")
+    return stamps[:decoded]
+
+
 @dataclass
 class Signal:
     """Покадровый сигнал изменения. Всё выровнено по одному индексу."""
@@ -272,11 +288,8 @@ def analyze(info: VideoInfo, *, fps: float = ANALYZE_FPS, width: int = ANALYZE_W
         raise RuntimeError(f"ffmpeg не отдал ни одного кадра (код {code}). {err.strip()[-300:]}")
 
     if fast:
-        stamps = [float(m) for m in _PTS.findall(err)]
-        if len(stamps) >= len(times):
-            times = stamps[: len(times)]
-        elif stamps:
-            times = stamps + times[len(stamps):]
+        times = _keyframe_times(stamps=[float(m) for m in _PTS.findall(err)],
+                                decoded=len(times))
 
     span = times[-1] - times[0]
     return Signal(

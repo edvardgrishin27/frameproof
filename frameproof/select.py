@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+import math
+
 import numpy as np
 
 from .analyze import Signal
@@ -339,12 +341,18 @@ def select_frames(
     cues: list[float] | None = None,
     cap: int = 0,
 ) -> Selection:
-    if cap <= 0:
+    auto_cap = cap <= 0
+    if auto_cap:
         cap = frame_budget(duration)
     # Гарантия в 15 секунд на 14-секундном ролике бессмысленна: один кадр, и отчёт
     # гордо пишет «покрытие 100 %». На коротком видео шаг должен быть от длительности.
     if duration < SHORT_VIDEO:
         max_gap = min(max_gap, max(1.0, duration / 12.0))
+    if auto_cap:
+        # Потолок по умолчанию не должен спорить с гарантией: на трёх часах при
+        # 15 с это минимум 721 кадр, а потолок был 600, и отчёт всегда писал
+        # «потолок не выдержан», хотя никто ничего не просил.
+        cap = max(cap, math.ceil(duration / max_gap) + 1)
 
     # 1. Детект
     picks: list[Pick] = []

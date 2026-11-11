@@ -7,6 +7,7 @@ build/
 work/
 bench/claude-video
 bench/*.json
-!bench/hermes.json  # сохранённый прогон замера: на него ссылаются README
+# сохранённый прогон замера: на него ссылаются README
+!bench/hermes.json
 .venv/
 .DS_Store

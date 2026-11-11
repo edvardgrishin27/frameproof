@@ -184,13 +184,19 @@ def _openai_whisper(audio: str, lang: str | None) -> Transcript | None:
 
 def transcribe_audio(audio: str, *, lang: str | None = None) -> Transcript:
     """Локальная расшифровка. Пробуем от быстрого к медленному."""
+    errors: list[str] = []
     for engine in (_mlx_whisper, _openai_whisper):
         try:
             result = engine(audio, lang)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — любой сбой движка называем по имени
+            errors.append(f"{engine.__name__.strip('_')}: {type(exc).__name__}: {exc}")
             result = None
         if result and result.segments:
             return result
+    if errors:
+        # Движок есть, но упал. Раньше это превращалось в «не нашёл движка»,
+        # и человек шёл ставить то, что у него уже стоит.
+        raise RuntimeError("локальная расшифровка упала: " + "; ".join(errors))
     raise RuntimeError(
         "не нашёл локального движка расшифровки. Поставьте один из:\n"
         "  pip install mlx-whisper      # быстро на Apple Silicon\n"
