@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from frameproof.budget import effective_tokens, image_tokens, scaled_height
@@ -124,6 +126,7 @@ def test_субтитры_srt_читаются_как_и_vtt(tmp_path):
     assert tr.language == "ru"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="распознаватель-заглушка — shell-скрипт")
 def test_чужой_распознаватель_вызывается_вместо_свифта(tmp_path):
     """--ocr-command закрывает Windows и Linux: договор тот же «путь<TAB>текст»."""
     import stat

@@ -282,13 +282,19 @@ def test_точный_кадр_снимается_в_названный_моме
     """Ближайший готовый кадр может стоять в 8–15 с от нужного момента."""
     from frameproof.__main__ import main
 
-    before = {r["id"] for r in _rows(built)}
+    rows = _rows(built)
+    before = {r["id"] for r in rows}
+    # Момент посреди самого большого разрыва: там готового кадра заведомо нет,
+    # на какой бы версии ffmpeg ни собрался индекс (на CI 1:47.5 оказалась занята).
+    ts = sorted(r["t"] for r in rows)
+    a, b = max(zip(ts, ts[1:]), key=lambda p: p[1] - p[0])
+    t = round((a + b) / 2, 1)
     capsys.readouterr()
-    assert main(["frames", "--at", "1:47.5", "--exact", "--out", built]) == 0
+    assert main(["frames", "--at", str(t), "--exact", "--out", built]) == 0
     out = capsys.readouterr().out
 
     new = [r for r in _rows(built) if r["id"] not in before]
-    assert len(new) == 1 and abs(new[0]["t"] - 107.5) < 0.01
+    assert len(new) == 1 and abs(new[0]["t"] - t) < 0.01
     assert new[0]["reason"] == "exact"
     assert os.path.exists(os.path.join(built, new[0]["path"]))
     assert new[0]["id"] in out

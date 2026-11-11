@@ -7,7 +7,7 @@
 **Your coding agent did not watch that video. It guessed.**
 
 [![version](https://img.shields.io/badge/version-0.7.2-1f6feb)](pyproject.toml)
-[![tests](https://img.shields.io/badge/tests-230-2ea043)](tests)
+[![tests](https://img.shields.io/badge/tests-287-2ea043)](tests)
 [![api keys](https://img.shields.io/badge/API%20keys-none-555555)](#install)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](pyproject.toml)
 [![license](https://img.shields.io/badge/license-MIT-97ca00)](LICENSE)
@@ -46,8 +46,8 @@ own answer afterwards.
      ├─► frames   [18:38 / f0097] frames/f0097.jpg (1196 tokens)
      │                                        images — this one only
      │
-     └─► verify   FRAME_NOT_FOUND · TIME_MISMATCH · NEVER_OPENED
-                                    six checks, zero model calls
+     └─► verify   FRAME_NOT_FOUND · TIME_MISMATCH · NEVER_OPENED · UNTAGGED
+                                    eleven checks, zero model calls
 ```
 
 ```bash
@@ -132,10 +132,12 @@ Tokens, same video:
 | | claude-video | frameproof |
 |---|---|---|
 | show every frame | 473 × 209 = 98,857 | 228 × 1196 = 272,688 |
-| one pointed question ("which command at 4:12") | 25,840 — fixed | **3,192** |
+| one pointed question ("which command at 4:12") | whole transcript + every frame | search lines + 1 frame (1196) |
 
-`claude-video` prints the whole transcript and every frame **always**; there is no way
-to pay less. Break-even is around 20 frames shown per session — past that, we cost more.
+In local mode `claude-video` prints the whole transcript and every frame; there is no way
+to pay less. Two exact numbers used to stand here (25,840 and 3,192), but their derivation
+was never saved in `bench/`, so they are gone: the reproducible part is that a 1280x720
+frame costs 1196 tokens. Break-even is around 20 frames shown per session — past that, we cost more.
 
 Two footnotes to the tables above, both also in [bench/RESULTS.md](bench/RESULTS.md).
 
@@ -156,9 +158,9 @@ Full method and every caveat: [bench/RESULTS.md](bench/RESULTS.md).
 | you are | the pain | what you get |
 |---|---|---|
 | **A developer** having an agent watch a tutorial for an unfamiliar tool | The agent confidently names a command that was never on screen, and checking costs more than doing the work yourself | Every screen claim carries `[MM:SS / fNNNN]`, and `frameproof verify` checks it with arithmetic — including "the frame exists but was never shown to the agent" |
-| **A reviewer or news creator** covering other people's videos | Citing a video means watching all of it and typing timestamps by hand; a transcript retelling lies exactly where it matters — numbers, UI, code on screen | Search runs over speech AND on-screen text (SQLite FTS5 trigrams, so inflected languages just work); a frame loads only for the moment you name — 3,192 tokens against 25,840 |
+| **A reviewer or news creator** covering other people's videos | Citing a video means watching all of it and typing timestamps by hand; a transcript retelling lies exactly where it matters — numbers, UI, code on screen | Search runs over speech AND on-screen text (SQLite FTS5 trigrams, so inflected languages just work); a frame loads only for the moment you name |
 | **Someone studying from a paid course** on Kinescope | `yt-dlp` refuses the host — the extractor request has been open since 2022, and handing it the manifest makes it estimate 96 GiB for a 121 MB lecture | Our own fetch: the server honours any byte range, downloaded in 32 MB chunks with resume. End-to-end run on an 82-minute lecture: 497 frames, 100 % coverage |
-| **Whoever writes up calls and internal meetings** | An NDA Zoom recording cannot be uploaded to Groq or OpenAI — which is exactly where competing tools send the audio. And a call is not only sound: the screen share, the table, the diagram | Zero API keys. Subtitles come free from `yt-dlp`; when there are none, transcription runs locally. For a local file the network is never touched — after `index`, `search` and `frames` work with it unplugged |
+| **Whoever writes up calls and internal meetings** | An NDA Zoom recording cannot go to the cloud. Since 0.3.0 claude-video can transcribe locally, but with a Gemini key it uploads the whole video to Google. And a call is not only sound: the screen share, the table, the diagram | Zero API keys, no cloud mode at all. `--from 40:00 --to 55:00` indexes just the part you need. After `index`, `search` and `frames` work with the network unplugged. Caveat: whatever frames and lines the agent reads do reach the agent's own model provider |
 | **Support and QA** triaging a customer's screen recording | Twenty minutes of screencast and "it broke somewhere here". The scene threshold cannot fire on a screencast, so automation returns three frames from the intro and outro | Per-cell change detection against each cell's own baseline: a new terminal line clears the 0.015 threshold comfortably, while a twitching webcam or cursor is masked as noise |
 | **A technical writer** needing screenshots from someone else's demo | A screenshot without a timestamp proves nothing, and a frame from mid-animation is useless — the line is half-typed, the slide is still sliding in | The frame is taken **after** the picture settles (quiet threshold 0.004): the last frame of a burst carries the most finished text. Hence 3.6 reliable terms per frame against 1.7 |
 | **Whoever has to check someone else's write-up** — editor, compliance, supervisor | An LLM summary looks equally convincing whether it is right or invented, so verifying means watching the video yourself | Two layers. Mechanical: `verify` catches an invented frame, a drifted timestamp, a moment inside a coverage gap, a quote absent from the frame's OCR. Semantic: a blind subagent sees ONLY the frame and the claim, and its job is to refute |
@@ -210,8 +212,10 @@ frameproof frames --at 18:38 --out ~/.frameproof/hermes
 # 1 кадр, примерно 1196 визуальных токенов.
 ```
 
-Search is substring-based, over trigrams: `memor` finds "memory" and "memories" alike,
-and Russian case endings stop mattering. Queries shorter than three characters (`AI`,
+Search is substring-based, over trigrams. Every query word must match, in any order,
+by a rough stem: "таблица" finds "таблицу", `memories` finds "memory". Ё and е are the
+same letter here. When there are more hits than the limit, output says so:
+"показано 20 из 27". Queries shorter than three characters (`AI`,
 `v2`) are below trigram resolution, so a direct line scan handles those. No vector
 index, no external service.
 
@@ -269,23 +273,29 @@ frameproof verify answer.md --out ~/.frameproof/hermes
 ✗ [5:00 / f0097] Here he opens the router settings.
       FAIL  TIME_MISMATCH: the tag says 5:00, frame f0097 was taken at 18:38
 ?  [29:31 / f0160] A list of ten skills is shown.
-      WARN  NEVER_OPENED: the frame exists but was never requested —
-            the claim was made without looking
+      WARN  NEVER_OPENED: the frame exists but `frames` never served it —
+            the claim looks made without looking
 ```
 
-Six checks, zero model calls: does the frame exist · does the timestamp match · does the
-moment fall in a coverage gap · **was the frame ever served to the agent** · does the
-quoted string appear in the frame's OCR · does it appear in nearby speech.
+Eleven checks, zero model calls: broken references (`FRAME_NOT_FOUND`, `TIME_MISMATCH`,
+`BAD_TIMECODE`), another index build (`INDEX_MISMATCH`), moments with no frames
+(`IN_COVERAGE_GAP`, `OUTSIDE_WINDOW`), **frames never served** (`NEVER_OPENED`), quotes
+missing from the frame and from nearby speech (`QUOTE_NOT_ON_SCREEN`,
+`QUOTE_NOT_IN_SPEECH`), quotes with nothing to check against (`QUOTE_UNCHECKED`), and
+screen claims with no tag at all (`UNTAGGED`). A quote word that is absent even with a
+typo fails the quote; one wrong letter in a long word is treated as an OCR slip.
 
 `NEVER_OPENED` is possible only because serving and indexing are separate: `_log_served()`
-appends every delivered frame id to `served.jsonl`. A tool that dumps all frames into the
-context by default cannot know this about itself.
+appends every delivered frame id to `served.jsonl`. Honest limit: the log knows what
+`frames` served, not whether the agent opened the image.
 
 ## A blind second look
 
-Meaning is beyond arithmetic. For that there is a separate subagent that sees **only the
-frame and the claim** — not the user's question, not the author's reasoning, not the rest
-of the answer. It is declared with `tools: Read` and its job is to refute.
+Meaning is beyond arithmetic. For that there is a separate subagent that gets a numbered
+list of claims with frame paths — not the user's question, not the author's reasoning.
+It is declared with `tools: Read` and its job is to refute. Honest limit: the claims come
+as one list and `Read` can open any file, so the blindness is held by instructions, not
+by a sandbox. Doubtful claims go first.
 
 ```bash
 frameproof verify answer.md --out <index> --plan   # tasks carrying no context at all
@@ -375,8 +385,11 @@ Anthropic's official table.
 
 The full list is in [CLAIMS.md](CLAIMS.md). The short version:
 
-- **One author, 24 stars.** claude-video has 16,696 and 1,681 forks; claude-real-video
-  2,114; watch-skill 330. If this author stops, there is nobody to pick it up.
+- **One author, 33 stars.** claude-video has 20,471; claude-real-video 2,307;
+  watch-skill 569 (as of 2026-11-11). If this author stops, there is nobody to pick it up.
+- **The benchmark ran against claude-video at commit `83da59f` (June 2026).** Since then
+  they shipped 0.3.0–0.3.2: different uniform sampling, RGB dedup, local WhisperX, a cloud
+  Gemini engine. Not re-measured; the tables describe that version.
 - **The benchmark is one video**, and of the class most favourable to us: a screencast
   guide, where the gap is widest by construction. On an edited video with frequent cuts
   the scene threshold works fine and the difference collapses. We have not measured that
@@ -387,16 +400,16 @@ The full list is in [CLAIMS.md](CLAIMS.md). The short version:
 - **The default is slow**: 32–52 seconds against their 1. `--fast` closes that (1.1 s)
   at the cost of 15 % of the information.
 - **Cheaper only up to a point**: break-even is around 20 frames shown per session.
-  Anyone paging honestly through a whole video pays more here. Contact-sheet packing,
-  which neighbours use for exactly that case, is not wired up: `contact_sheet()` exists in
-  `extract.py` but no command calls it (`grep -rn contact_sheet`). We have never measured
-  what it would save, so no number is claimed here.
+  Anyone paging honestly through a whole video pays more here. A contact sheet
+  (`frames --sheet`, 16 thumbnails for the price of one frame) covers part of that case,
+  but its savings were never measured, so no number is claimed here.
 - **Untested outside Claude Code.** Portable format, manifests in place, no live run on
   Codex, Cursor or Copilot.
 - **Grew on a MacBook.** Apple Vision for OCR, mlx-whisper for local transcription.
   The doors out are open (`--ocr-command`, `--subs`) and `Windows.Media.Ocr` fits the
-  contract, but that was verified by a stranger over email, not by our CI. watch-skill
-  runs Windows CI on every push.
+  contract, but that was verified by a stranger over email, not by our CI. Our CI runs the
+  tests with real ffmpeg on Linux, macOS and Windows; OCR and transcription there are not
+  covered.
 - **Kinescope rests on one public video** — no encryption, no signature. Chunked
   download over a *signed* link has never run live: the person who held such a link hit
   a 410 before reaching it. ClearKey videos are refused on principle.
@@ -404,8 +417,7 @@ The full list is in [CLAIMS.md](CLAIMS.md). The short version:
   runs on its own and never deletes anything. Selling it as "automatic verification"
   would be a lie.
 - **The niche is deliberately narrow.** Neighbours cover things we do not: speaker
-  diarisation, a `--from/--to` window inside a long call, contact-sheet packing, live
-  streams, an MCP server, REST, LangChain and CrewAI adapters, a web UI. We are three
+  diarisation, live streams, an MCP server, REST, LangChain and CrewAI adapters, a web UI. We are three
   commands in a terminal.
 - **The CLI speaks Russian** (`покрытие: 97 %`, `кадров не нашлось`) while this README
   is in English. For a Russian-speaking audience that is a feature; for everyone else it
