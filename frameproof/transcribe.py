@@ -51,7 +51,9 @@ class Transcript:
         return " ".join(s.text for s in self.segments)
 
 
-_TS = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})")
+#: Часы необязательны: WebVTT разрешает `ММ:СС.ммм`, так пишут Loom и люди руками.
+#: Раньше часы требовались, и такой файл молча давал ноль реплик.
+_TS = re.compile(r"(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{1,3})")
 
 
 def _vtt_time(value: str) -> float | None:
@@ -59,7 +61,7 @@ def _vtt_time(value: str) -> float | None:
     if not m:
         return None
     h, mi, s, ms = m.groups()
-    return int(h) * 3600 + int(mi) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000
+    return int(h or 0) * 3600 + int(mi) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000
 
 
 def parse_json3(raw: bytes | str) -> list[Segment]:

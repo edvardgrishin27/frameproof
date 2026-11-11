@@ -46,11 +46,15 @@ def extract(
     ffmpeg = which("ffmpeg")
 
     frames: list[ExtractedFrame] = []
+    last_error = ""
     for i, pick in enumerate(picks):
         fid = f"f{i:04d}"
         path = os.path.join(out_dir, f"{fid}.jpg")
         # -ss ДО -i это input seeking: прыжок по ключевым кадрам, а не декод с начала.
-        run(
+        # check=False: один неснятый кадр — это участок без кадра в отчёте покрытия,
+        # а не повод ронять весь индекс. Раньше код 234 на кадре за концом
+        # видеодорожки обрывал сборку целиком и печатал сырой дамп команды.
+        proc = run(
             [
                 ffmpeg, "-v", "error", "-y",
                 "-ss", f"{pick.t:.3f}",
@@ -59,9 +63,13 @@ def extract(
                 "-vf", f"scale={width}:{height}:flags=lanczos",
                 "-q:v", str(quality),
                 path,
-            ]
+            ],
+            check=False,
         )
-        if not os.path.exists(path):
+        if proc.returncode != 0 or not os.path.exists(path) or not os.path.getsize(path):
+            last_error = (proc.stderr or "").strip()[-300:] or f"код {proc.returncode}"
+            if os.path.exists(path):
+                os.remove(path)          # пустой или битый файл: в индекс он не пойдёт
             continue
         frames.append(
             ExtractedFrame(
@@ -74,6 +82,9 @@ def extract(
                 reason=pick.reason,
             )
         )
+    if picks and not frames:
+        # Не снялось ничего — это не «покрытие 0 %», а поломка файла или ffmpeg.
+        raise RuntimeError(f"ffmpeg не снял ни одного кадра из {info.path}: {last_error}")
     return frames
 
 

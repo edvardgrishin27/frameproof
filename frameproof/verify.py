@@ -64,6 +64,8 @@ class Claim:
     t: float
     frame_id: str | None
     line_no: int
+    #: Тайм-код так, как его написал автор. Нужен, когда прочитать его нельзя.
+    tc_raw: str = ""
     quotes: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
 
@@ -155,6 +157,23 @@ def extract_index_id(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _new_claim(n: int, line: str, raw_tc: str, frame_id: str | None, line_no: int) -> Claim:
+    """Утверждение по метке. Нечитаемый тайм-код — провал этой метки, а не всего аудита.
+
+    Раньше `parse_tc` бросал ValueError прямо отсюда, и одна опечатка вроде
+    `[1:75 / f0020]` обрывала `verify`: остальные утверждения не проверялись.
+    """
+    try:
+        t, bad = parse_tc(raw_tc), None
+    except ValueError as exc:
+        t, bad = 0.0, str(exc)
+    claim = Claim(n=n, text=_claim_text(line), t=t, frame_id=frame_id,
+                  line_no=line_no, tc_raw=raw_tc)
+    if bad:
+        claim.findings.append(Finding("BAD_TIMECODE", FAIL, bad))
+    return claim
+
+
 def extract_claims(answer: str) -> list[Claim]:
     """Достаёт утверждения из разбора по обязательным меткам."""
     claims: list[Claim] = []
@@ -162,28 +181,12 @@ def extract_claims(answer: str) -> list[Claim]:
         seen_spans: list[tuple[int, int]] = []
         for m in _TAG_FRAME.finditer(line):
             seen_spans.append(m.span())
-            claims.append(
-                Claim(
-                    n=len(claims) + 1,
-                    text=_claim_text(line),
-                    t=parse_tc(m.group(1)),
-                    frame_id=m.group(2),
-                    line_no=line_no,
-                )
-            )
+            claims.append(_new_claim(len(claims) + 1, line, m.group(1), m.group(2), line_no))
         for m in _TAG_TIME.finditer(line):
             # Не считать дважды кусок «[4:12 / f0043]», внутри которого тоже есть время.
             if any(a <= m.start() < b for a, b in seen_spans):
                 continue
-            claims.append(
-                Claim(
-                    n=len(claims) + 1,
-                    text=_claim_text(line),
-                    t=parse_tc(m.group(1)),
-                    frame_id=None,
-                    line_no=line_no,
-                )
-            )
+            claims.append(_new_claim(len(claims) + 1, line, m.group(1), None, line_no))
     for c in claims:
         c.quotes = [q for pair in _QUOTES.findall(c.text) for q in pair if q]
     return claims
@@ -222,6 +225,7 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
         ))
     for c in claims:
         frame = frames.get(c.frame_id) if c.frame_id else None
+        bad_tc = any(f.code == "BAD_TIMECODE" for f in c.findings)
 
         if c.frame_id and frame is None:
             c.findings.append(Finding(
@@ -229,7 +233,7 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
                 f"кадра {c.frame_id} в индексе нет — ссылка выдумана",
             ))
 
-        if frame is not None and abs(frame["t"] - c.t) > TIME_TOLERANCE:
+        if frame is not None and not bad_tc and abs(frame["t"] - c.t) > TIME_TOLERANCE:
             хвост = (" — но индекс другой, см. INDEX_MISMATCH выше"
                      if чужой_индекс else "")
             c.findings.append(Finding(
@@ -238,7 +242,8 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
                 f"в {tc_short(frame['t'])}{хвост}",
             ))
 
-        in_gap = next((g for g in gaps if g["from"] <= c.t <= g["to"]), None)
+        in_gap = None if bad_tc else next(
+            (g for g in gaps if g["from"] <= c.t <= g["to"]), None)
         if in_gap is not None:
             c.findings.append(Finding(
                 "IN_COVERAGE_GAP", FAIL,
@@ -252,7 +257,8 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
                 f"утверждение сделано, не посмотрев",
             ))
 
-        for quote in c.quotes:
+        # Время не прочитано — сверять цитату с речью «рядом» не с чем.
+        for quote in ([] if bad_tc else c.quotes):
             ocr = (frame or {}).get("ocr") or ""
             near = " ".join(
                 s["text"] for s in segments
@@ -309,7 +315,8 @@ def render(claims: list[Claim], *, index_dir: str = "") -> str:
     lines = ["АУДИТ УТВЕРЖДЕНИЙ", "─" * 17]
     mark = {OK: "✓", WARN: "?", FAIL: "✗"}
     for c in claims:
-        ref = f"{tc_short(c.t)}" + (f" / {c.frame_id}" if c.frame_id else "")
+        bad_tc = any(f.code == "BAD_TIMECODE" for f in c.findings)
+        ref = (c.tc_raw if bad_tc else tc_short(c.t)) + (f" / {c.frame_id}" if c.frame_id else "")
         lines.append(f"{mark[c.severity]} [{ref}] {c.text[:100]}")
         for f in c.findings:
             lines.append(f"      {f.severity}  {f.code}: {f.detail}")

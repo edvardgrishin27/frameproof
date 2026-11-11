@@ -46,6 +46,13 @@ def coverage_lines(sel: Selection, *, frame_w: int = 0, frame_h: int = 0) -> lis
         if len(sel.gaps) > 8:
             lines.append(f"    ... и ещё {len(sel.gaps) - 8}")
 
+    if sel.missing:
+        lines.append(
+            f"не удалось снять {sel.missing} "
+            f"{plural(sel.missing, 'кадр', 'кадра', 'кадров')}: ffmpeg не смог извлечь "
+            f"их из файла. Покрытие выше посчитано по снятым."
+        )
+
     if sel.dropped_duplicates:
         lines.append(f"схлопнуто дублей: {sel.dropped_duplicates}")
     if sel.dropped_budget:

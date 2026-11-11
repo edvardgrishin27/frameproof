@@ -21,7 +21,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -105,6 +105,8 @@ class Selection:
     dropped_duplicates: int
     dropped_budget: int
     cap: int = 0
+    #: Кадры из плана, которые ffmpeg снять не смог. Их места — настоящие разрывы.
+    missing: int = 0
 
     @property
     def times(self) -> list[float]:
@@ -393,6 +395,24 @@ def select_frames(
         dropped_duplicates=dropped_dup,
         dropped_budget=dropped_budget,
         cap=cap,
+    )
+
+
+def keep_extracted(plan: Selection, extracted_times: list[float]) -> Selection:
+    """Покрытие по тому, что СНЯЛИ, а не по тому, что собирались снять.
+
+    План по построению закрыт сеткой без разрывов: `_fill_gaps` закрывает любой
+    промежуток, `_thin` его не открывает. Поэтому покрытие, посчитанное по плану,
+    всегда 100 %, и отчёт молчал ровно там, где кадр не получился. Здесь разрывы
+    считаются заново, по кадрам, которые реально легли на диск.
+    """
+    have = set(extracted_times)
+    kept = [p for p in plan.picks if p.t in have]
+    return replace(
+        plan,
+        picks=kept,
+        gaps=_measure_gaps(kept, plan.duration, plan.max_gap_target),
+        missing=len(plan.picks) - len(kept),
     )
 
 

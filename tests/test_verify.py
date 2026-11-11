@@ -159,3 +159,49 @@ def test_потолок_второго_взгляда_соблюдается(ind
     answer = "\n".join(f"- Утверждение {i}. [1:00 / f0001]" for i in range(20))
     claims = audit(answer, index)
     assert len(plan_second_look(claims, index, limit=3)) == 3
+
+
+def test_опечатка_в_метке_роняет_только_своё_утверждение(index):
+    """`[1:75 / f0001]` — секунд больше 59. Раньше это роняло аудит целиком.
+
+    parse_tc честно отказывается такое читать, но ошибка вылетала из `verify`
+    наружу: человек видел «ошибка: не понял тайм-код», и остальные утверждения
+    не проверялись вовсе. Опечатка — это провал одной ссылки, а не всего разбора.
+    """
+    from frameproof.verify import render
+
+    answer = (
+        "- Команда установки `npm install hermes` [1:00 / f0001]\n"
+        "- Что-то с опечаткой во времени [1:75 / f0002]\n"
+        "- И без кадра, тоже с опечаткой [9:99]\n"
+    )
+    claims = audit(answer, index)
+
+    assert len(claims) == 3
+    assert only(claims, 1).severity in (OK, WARN)
+    for n in (2, 3):
+        c = only(claims, n)
+        assert c.severity == FAIL
+        assert any(f.code == "BAD_TIMECODE" for f in c.findings)
+    text = render(claims, index_dir=index)
+    assert "1:75" in text and "BAD_TIMECODE" in text
+
+
+def test_у_нечитаемой_метки_нет_ложных_проверок(index):
+    """Время не прочитано — сверять цитату с речью «рядом с 0:00» нельзя."""
+    claims = audit("- цитата `совсем другое` [1:75 / f0001]\n", index)
+    codes = [f.code for f in claims[0].findings]
+
+    assert "BAD_TIMECODE" in codes
+    assert not any(c.startswith("QUOTE_") for c in codes)
+
+
+def test_json_не_выдаёт_нечитаемое_время_за_ноль(index, tmp_path, capsys):
+    from frameproof.__main__ import main
+
+    answer = tmp_path / "a.md"
+    answer.write_text("- опечатка [1:75 / f0001]\n", encoding="utf-8")
+    main(["verify", str(answer), "--out", index, "--json"])
+    row = json.loads(capsys.readouterr().out)[0]
+
+    assert row["t"] is None and row["tc_raw"] == "1:75"

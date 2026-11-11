@@ -7,14 +7,14 @@
 **Ваш агент не смотрел это видео. Он угадал.**
 Здесь у каждого утверждения про экран стоит тайм-код, и его проверяет арифметика.
 
-[![версия](https://img.shields.io/badge/version-0.7.1-1f6feb)](pyproject.toml)
-[![тесты](https://img.shields.io/badge/tests-213-2ea043)](tests)
+[![версия](https://img.shields.io/badge/version-0.7.2-1f6feb)](pyproject.toml)
+[![тесты](https://img.shields.io/badge/tests-230-2ea043)](tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-3776ab)](#установка)
 [![зависимости](https://img.shields.io/badge/dependencies-numpy-8957e5)](pyproject.toml)
 [![API-ключи](https://img.shields.io/badge/API%20keys-none-555555)](#что-умеет)
 [![лицензия](https://img.shields.io/badge/license-MIT-97ca00)](LICENSE)
 
-213 тестов · гарантия «без кадра не дольше 15 секунд» · ни одного API-ключа · точечный вопрос за 3 192 токена вместо 25 840.
+230 тестов · гарантия «без кадра не дольше 15 секунд» · ни одного API-ключа · точечный вопрос за 3 192 токена вместо 25 840.
 
 ## Как это устроено
 

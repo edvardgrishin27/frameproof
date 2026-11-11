@@ -44,3 +44,20 @@ def test_скилл_несёт_обязательный_frontmatter():
     assert head.startswith("---"), "нет frontmatter"
     for field in ("name:", "description:"):
         assert field in head, f"в frontmatter нет {field} — хост не подхватит скилл"
+
+
+def test_значок_версии_в_readme_совпадает_с_пакетом():
+    """Значок версии — четвёртое место, где живёт номер, и оно тоже разъезжалось.
+
+    Случай 0.7.2: пакет поднят, а оба README показывали 0.7.1. Человек на GitHub
+    видел одну версию, `pip` ставил другую.
+    """
+    import re
+
+    from frameproof import __version__
+
+    for name in ("README.md", "README.en.md"):
+        with open(os.path.join(ROOT, name), encoding="utf-8") as fh:
+            m = re.search(r"badge/version-([\d.]+)-", fh.read())
+        assert m, f"в {name} нет значка версии"
+        assert m.group(1) == __version__, f"{name}: значок {m.group(1)}, пакет {__version__}"
