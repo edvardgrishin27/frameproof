@@ -442,6 +442,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if args.plan:
         tasks = plan_second_look(claims, out_dir, limit=args.limit)
         print(json.dumps(tasks, ensure_ascii=False, indent=2))
+        eligible = sum(1 for c in claims if c.needs_second_look)
+        if eligible > len(tasks):
+            print(f"в план вошло {len(tasks)} из {eligible}, пропущено {eligible - len(tasks)}: "
+                  f"сначала взяты сомнительные. Поднять потолок: --limit {eligible}",
+                  file=sys.stderr)
         return 0
 
     if args.json:
@@ -449,7 +454,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             [
                 {
                     "n": c.n, "text": c.text,
-                    "t": None if any(f.code == "BAD_TIMECODE" for f in c.findings) else c.t,
+                    "t": c.t if c.has_time else None, "untagged": c.untagged,
                     "tc_raw": c.tc_raw, "frame_id": c.frame_id,
                     "severity": c.severity, "needs_second_look": c.needs_second_look,
                     "findings": [
@@ -464,7 +469,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 0
 
     print(render(claims, index_dir=out_dir))
-    return 1 if any(c.severity == "FAIL" for c in claims) else 0
+    if any(c.severity == "FAIL" for c in claims):
+        return 1
+    # Разбор про экран без единой метки непроверяем целиком — это не «чисто».
+    return 1 if claims and all(c.untagged for c in claims) else 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:

@@ -21,6 +21,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from .util import parse_tc, plural, tc_short
 
@@ -32,20 +33,43 @@ TIME_TOLERANCE = 2.0
 #: Не 100 %: распознавание системно путает пунктуацию и отдельные буквы.
 QUOTE_OVERLAP = 0.6
 
-#: Цитаты короче этого не проверяем — на коротком куске совпадения случайны.
-QUOTE_MIN_WORDS = 2
+#: Слово такой длины и длиннее, которого нет в тексте даже с опечаткой, — выдумка,
+#: какая бы доля остальных слов ни совпала. `class Dragon(Reptile)` при
+#: `class Snake(Reptile)` давал два слова из трёх и проходил по доле.
+DISTINCT_WORD = 4
+
+#: С какой длины слово сверяется нечётко и насколько похожим оно должно быть.
+#: OCR путает отдельные буквы (`rn`↔`m`, `l`↔`I`), и одна буква мимо в длинном
+#: слове — ошибка распознавания, а не выдумка автора.
+FUZZY_MIN_LEN = 5
+FUZZY_RATIO = 0.8
 
 FAIL = "FAIL"
 WARN = "WARN"
 OK = "OK"
 
 #: [4:12 / f0043] — утверждение об экране с привязкой к кадру.
-_TAG_FRAME = re.compile(r"\[\s*(\d{1,2}(?::\d{2}){1,2})\s*/\s*(f\d{3,})\s*\]")
+_TAG_FRAME = re.compile(r"\[\s*(\d{1,3}(?::\d{2}){1,2})\s*/\s*(f\d{3,})\s*\]")
 #: [4:12] — утверждение о моменте без кадра (обычно про речь).
-_TAG_TIME = re.compile(r"\[\s*(\d{1,2}(?::\d{2}){1,2})\s*\]")
+_TAG_TIME = re.compile(r"\[\s*(\d{1,3}(?::\d{2}){1,2})\s*\]")
 
-#: Цитаты: «ёлочки», "кавычки", `бэктики`.
-_QUOTES = re.compile(r"[«\"']([^«»\"']{3,200})[»\"']|`([^`]{3,200})`")
+#: Цитаты: «ёлочки», "кавычки", 'одинарные', `бэктики`. Одинарная кавычка считается
+#: только на границе слова: иначе английский апостроф (`it's ... don't`) давал
+#: ложную «цитату» `s the config, don`.
+_QUOTES = re.compile(
+    r"«([^«»\n]{2,200})»"
+    r"|\"([^\"\n]{2,200})\""
+    r"|(?<!\w)'([^'\n]{2,200})'(?!\w)"
+    r"|`([^`\n]{2,200})`"
+)
+
+#: Слова, по которым строка без метки похожа на утверждение об экране.
+_SCREEN_WORDS = (
+    "на экран", "на слайд", "на кадр", "на скрин", "показан", "показыва", "видно",
+    "открыт", "в терминал", "в интерфейс", "в окне", "кнопк", "на странице",
+    "on screen", "on the screen", "the slide", "is shown", "shows", "displayed",
+    "in the terminal", "the window", "button",
+)
 
 _WORD = re.compile(r"[\w./:-]+", re.UNICODE)
 
@@ -66,6 +90,8 @@ class Claim:
     line_no: int
     #: Тайм-код так, как его написал автор. Нужен, когда прочитать его нельзя.
     tc_raw: str = ""
+    #: Строка похожа на утверждение об экране, но метки у неё нет.
+    untagged: bool = False
     quotes: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
 
@@ -78,6 +104,11 @@ class Claim:
         return OK
 
     @property
+    def has_time(self) -> bool:
+        """Есть ли у утверждения момент, по которому вообще можно что-то сверять."""
+        return not self.untagged and not any(f.code == "BAD_TIMECODE" for f in self.findings)
+
+    @property
     def needs_second_look(self) -> bool:
         """Механика молчит, а утверждение визуальное — тут и нужен слепой проверяющий."""
         return self.severity != FAIL and self.frame_id is not None
@@ -88,15 +119,29 @@ def _normalize(text: str) -> str:
 
 
 def _words(text: str) -> list[str]:
-    return [w for w in _WORD.findall(_normalize(text)) if len(w) > 1]
+    out = (w.strip(".,;:!?()[]{}\"'/") for w in _WORD.findall(_normalize(text)))
+    return [w for w in out if len(w) > 1]
+
+
+def _word_found(word: str, pool: set[str]) -> bool:
+    """Слово есть в тексте — точно или с одной-двумя буквами мимо (ошибка OCR)."""
+    if word in pool:
+        return True
+    if len(word) < FUZZY_MIN_LEN:
+        return False
+    return any(
+        abs(len(w) - len(word)) <= 2 and SequenceMatcher(None, word, w).ratio() >= FUZZY_RATIO
+        for w in pool
+    )
 
 
 def _quote_supported(quote: str, haystack: str) -> bool:
-    """Снисходительная сверка: точное вхождение либо достаточное перекрытие слов.
+    """Сверка цитаты: строгая к выдумке, снисходительная к ошибкам OCR.
 
-    Строгое сравнение здесь вредно. OCR путает пунктуацию (`[main` читается как `Imain`),
-    а модель при пересказе меняет регистр и пробелы. Задача проверки — поймать выдуманную
-    цитату, а не придраться к скобке.
+    Раньше цитата короче двух слов «не судилась» и проходила как подтверждённая,
+    а длинная проходила по доле совпавших слов, даже если подменено главное имя.
+    Теперь: точное вхождение — да; иначе каждое заметное слово цитаты должно
+    найтись в тексте хотя бы с опечаткой, и общая доля найденных — не ниже порога.
     """
     if not haystack:
         return False
@@ -104,11 +149,13 @@ def _quote_supported(quote: str, haystack: str) -> bool:
     if q_norm in h_norm:
         return True
     q_words = _words(quote)
-    if len(q_words) < QUOTE_MIN_WORDS:
-        return True          # слишком короткая цитата — не судим
-    h_words = set(_words(haystack))
-    hit = sum(1 for w in q_words if w in h_words)
-    return hit / len(q_words) >= QUOTE_OVERLAP
+    if not q_words:
+        return True          # в цитате одни знаки — судить не по чему
+    pool = set(_words(haystack))
+    found = [_word_found(w, pool) for w in q_words]
+    if any(not ok and len(w) >= DISTINCT_WORD for w, ok in zip(q_words, found)):
+        return False
+    return sum(found) / len(q_words) >= QUOTE_OVERLAP
 
 
 def _claim_text(line: str) -> str:
@@ -174,6 +221,14 @@ def _new_claim(n: int, line: str, raw_tc: str, frame_id: str | None, line_no: in
     return claim
 
 
+def _looks_like_screen(line: str) -> bool:
+    """Строка без метки, которая по словам говорит, что было на экране."""
+    if re.match(r"^\s*#", line) or _МЕТКА_ИНДЕКСА.search(line):
+        return False
+    low = _normalize(line)
+    return any(w in low for w in _SCREEN_WORDS)
+
+
 def extract_claims(answer: str) -> list[Claim]:
     """Достаёт утверждения из разбора по обязательным меткам."""
     claims: list[Claim] = []
@@ -187,6 +242,14 @@ def extract_claims(answer: str) -> list[Claim]:
             if any(a <= m.start() < b for a, b in seen_spans):
                 continue
             claims.append(_new_claim(len(claims) + 1, line, m.group(1), None, line_no))
+        if not seen_spans and not _TAG_TIME.search(line) and _looks_like_screen(line):
+            c = Claim(n=len(claims) + 1, text=_claim_text(line), t=0.0, frame_id=None,
+                      line_no=line_no, untagged=True)
+            c.findings.append(Finding(
+                "UNTAGGED", WARN,
+                "строка про экран без метки [MM:SS / fNNNN] — проверить её нельзя. "
+                "Поставь метку кадра или скажи, что это по звуку"))
+            claims.append(c)
     for c in claims:
         c.quotes = [q for pair in _QUOTES.findall(c.text) for q in pair if q]
     return claims
@@ -225,7 +288,9 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
         ))
     for c in claims:
         frame = frames.get(c.frame_id) if c.frame_id else None
-        bad_tc = any(f.code == "BAD_TIMECODE" for f in c.findings)
+        bad_tc = not c.has_time
+        if c.untagged:
+            continue
 
         if c.frame_id and frame is None:
             c.findings.append(Finding(
@@ -278,6 +343,14 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
                     "QUOTE_NOT_IN_SPEECH", WARN,
                     f"цитаты «{quote[:60]}» нет в транскрипте рядом с этим моментом",
                 ))
+            else:
+                # Раньше здесь не писалось ничего, и вердикт выходил ✓: цитату
+                # «подтверждало» отсутствие любых данных.
+                c.findings.append(Finding(
+                    "QUOTE_UNCHECKED", WARN,
+                    f"цитату «{quote[:60]}» проверить нечем: у кадра нет текста OCR "
+                    f"(индекс собран без --ocr?) и рядом нет речи",
+                ))
     return claims
 
 
@@ -289,20 +362,26 @@ def plan_second_look(claims: list[Claim], index_dir: str, *, limit: int = 8) -> 
     какой ответ от него ждут.
     """
     frames = {r["id"]: r for r in _load_jsonl(os.path.join(index_dir, "frames.jsonl"))}
+    # Сначала сомнительные: на них второй взгляд нужнее всего. Раньше брались
+    # первые по порядку, и при потолке 8 вопросы из конца разбора не попадали.
+    order = sorted((c for c in claims if c.needs_second_look),
+                   key=lambda c: (c.severity != WARN, c.n))
     tasks: list[dict] = []
-    for c in claims:
-        if not c.needs_second_look or len(tasks) >= limit:
-            continue
+    for c in order:
+        if len(tasks) >= limit:
+            break
         row = frames.get(c.frame_id)
         if not row:
             continue
         tasks.append({
             "claim_id": c.n,
             "claim_text": c.text,
-            "frame_path": os.path.join(index_dir, row["path"]),
+            # Абсолютный путь: проверяющий читает файл через Read, а тому нужен
+            # полный путь, относительный от папки агента не работает.
+            "frame_path": os.path.abspath(os.path.join(index_dir, row["path"])),
             "frame_id": c.frame_id,
         })
-    return tasks
+    return sorted(tasks, key=lambda t: t["claim_id"])
 
 
 def render(claims: list[Claim], *, index_dir: str = "") -> str:
@@ -315,8 +394,11 @@ def render(claims: list[Claim], *, index_dir: str = "") -> str:
     lines = ["АУДИТ УТВЕРЖДЕНИЙ", "─" * 17]
     mark = {OK: "✓", WARN: "?", FAIL: "✗"}
     for c in claims:
-        bad_tc = any(f.code == "BAD_TIMECODE" for f in c.findings)
-        ref = (c.tc_raw if bad_tc else tc_short(c.t)) + (f" / {c.frame_id}" if c.frame_id else "")
+        if c.untagged:
+            ref = "без метки"
+        else:
+            ref = (tc_short(c.t) if c.has_time else c.tc_raw) + (
+                f" / {c.frame_id}" if c.frame_id else "")
         lines.append(f"{mark[c.severity]} [{ref}] {c.text[:100]}")
         for f in c.findings:
             lines.append(f"      {f.severity}  {f.code}: {f.detail}")
@@ -330,6 +412,11 @@ def render(claims: list[Claim], *, index_dir: str = "") -> str:
         lines.append("Провалы — это сломанная ссылка, а не спорное мнение. Их надо чинить.")
     if warns:
         lines.append("Вопросы — повод посмотреть кадр глазами, а не приговор.")
+    untagged = sum(1 for c in claims if c.untagged)
+    if untagged:
+        lines.append(
+            f"строк про экран без метки: {untagged}. Их нельзя проверить ни механикой, "
+            "ни вторым взглядом — поставь метку [MM:SS / fNNNN].")
     remaining = sum(1 for c in claims if c.needs_second_look)
     if remaining:
         lines += [

@@ -205,3 +205,97 @@ def test_json_не_выдаёт_нечитаемое_время_за_ноль(in
     row = json.loads(capsys.readouterr().out)[0]
 
     assert row["t"] is None and row["tc_raw"] == "1:75"
+
+
+# --- Строже к выдумке, мягче к опечаткам OCR ---------------------------------------
+
+def test_выдуманная_цитата_из_одного_слова_ловится(index):
+    """Раньше цитата короче двух слов «не судилась» и проходила как подтверждённая."""
+    claims = audit("- На экране команда `pip` [1:00 / f0001]", index)
+    assert "QUOTE_NOT_ON_SCREEN" in codes(claims[0])
+
+
+def test_цитата_из_одного_слова_с_экрана_проходит(index):
+    claims = audit("- На экране команда `npm` [1:00 / f0001]", index)
+    assert not any(f.code.startswith("QUOTE") for f in claims[0].findings)
+
+
+def test_подменённое_имя_в_коде_ловится(index):
+    """`class Dragon(Reptile)` при `class Snake(Reptile)`: два слова из трёх совпали.
+
+    Порог по доле слов это пропускал. Длинное слово, которого нет нигде, — выдумка.
+    """
+    claims = audit("- На экране `npm install dragon` [1:00 / f0001]", index)
+    assert "QUOTE_NOT_ON_SCREEN" in codes(claims[0])
+
+
+def test_опечатка_ocr_в_длинном_слове_не_приговор(index):
+    """Одна буква мимо в длинном слове — обычная ошибка OCR, а не выдумка."""
+    claims = audit("- Команда `npm install hermas` [1:00 / f0001]", index)
+    assert not any(f.code.startswith("QUOTE") for f in claims[0].findings), codes(claims[0])
+
+
+def test_цитату_нечем_проверить_это_не_зелёный(index):
+    """У кадра нет OCR и рядом нет речи: раньше вердикт был ✓."""
+    claims = audit("- На экране заставка «SMPTE bars» [8:00 / f0003]", index)
+    assert "QUOTE_UNCHECKED" in codes(claims[0])
+    assert claims[0].severity == WARN
+
+
+def test_апостроф_не_делает_цитату(index):
+    claims = extract_claims("- It's the config, don't touch it [1:00 / f0001]")
+    assert claims[0].quotes == []
+
+
+def test_метка_с_трёхзначными_минутами(index):
+    claims = extract_claims("- Под конец лекции [125:30 / f0001]")
+    assert len(claims) == 1 and claims[0].t == 125 * 60 + 30
+
+
+# --- Утверждения про экран без метки ----------------------------------------------
+
+def test_строка_про_экран_без_метки_помечается(index):
+    answer = ("- Команда установки `npm install hermes` [1:00 / f0001]\n"
+              "- Потом на экране открывается таблица с ценами.\n"
+              "- Просто мысль автора без экрана.\n")
+    claims = audit(answer, index)
+    untagged = [c for c in claims if "UNTAGGED" in codes(c)]
+
+    assert len(untagged) == 1
+    assert "таблица с ценами" in untagged[0].text
+    assert untagged[0].severity == WARN
+    assert untagged[0].frame_id is None
+
+
+def test_разбор_про_экран_без_единой_метки_это_провал_выхода(index, tmp_path, capsys):
+    from frameproof.__main__ import main
+
+    answer = tmp_path / "a.md"
+    answer.write_text("На экране терминал, он вводит docker run.\n", encoding="utf-8")
+    assert main(["verify", str(answer), "--out", index]) == 1
+    assert "без метки" in capsys.readouterr().out
+
+
+# --- План второго взгляда ----------------------------------------------------------
+
+def test_план_сначала_берёт_сомнительные(index):
+    answer = ("- Верное. [1:00 / f0001]\n"
+              "- Не открывал. [2:00 / f0002]\n")
+    tasks = plan_second_look(audit(answer, index), index, limit=1)
+    assert [t["frame_id"] for t in tasks] == ["f0002"]
+
+
+def test_план_отдаёт_абсолютные_пути(index, monkeypatch):
+    monkeypatch.chdir(os.path.dirname(index))
+    rel = os.path.basename(index)
+    tasks = plan_second_look(audit("- Тут. [1:00 / f0001]", rel), rel)
+    assert os.path.isabs(tasks[0]["frame_path"])
+
+
+def test_план_говорит_сколько_пропущено(index, tmp_path, capsys):
+    from frameproof.__main__ import main
+
+    answer = tmp_path / "a.md"
+    answer.write_text("\n".join(f"- У{i}. [1:00 / f0001]" for i in range(5)), encoding="utf-8")
+    main(["verify", str(answer), "--out", index, "--plan", "--limit", "2"])
+    assert "пропущено 3" in capsys.readouterr().err
