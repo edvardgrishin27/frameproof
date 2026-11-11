@@ -89,7 +89,8 @@ def _fragment(source_url: str | None, t: float) -> str:
 
 
 
-def build_fingerprint(*, duration: float, frame_count: int, source: str) -> str:
+def build_fingerprint(*, duration: float, frame_count: int, source: str,
+                      times: list[float] | None = None) -> str:
     """Короткий отпечаток сборки индекса.
 
     Зачем. Идентификатор кадра — порядковый номер ВНУТРИ сборки (`f0084`), и при
@@ -103,6 +104,10 @@ def build_fingerprint(*, duration: float, frame_count: int, source: str) -> str:
     сборке. Берём то, что задаёт нарезку: длительность, число кадров и источник.
     """
     сырьё = f"{duration:.3f}|{frame_count}|{os.path.basename(source or '')}"
+    # Моменты кадров — то, что на деле задаёт нумерацию. Без них две сборки,
+    # упёршиеся в один потолок кадров, получали один отпечаток при разных моментах.
+    if times is not None:
+        сырьё += "|" + ",".join(f"{t:.3f}" for t in times)
     return "idx_" + hashlib.sha256(сырьё.encode("utf-8")).hexdigest()[:8]
 
 
@@ -169,7 +174,8 @@ def write(
     index = {
         "schema_version": SCHEMA_VERSION,
         "index_id": build_fingerprint(
-            duration=info.duration, frame_count=len(frames), source=source_url or title or ""),
+            duration=info.duration, frame_count=len(frames), source=source_url or title or "",
+            times=[f.t for f in frames]),
         "video": {
             "title": title,
             "source_url": source_url,

@@ -278,6 +278,8 @@ def cmd_index(args: argparse.Namespace) -> int:
     print(render(sel, title=title[:60], frame_w=frames[0].width if frames else 0,
                  frame_h=frames[0].height if frames else 0))
     print()
+    print(f"Индекс: {index['index_id']}   ← поставь эту строку в шапку разбора, "
+          "verify по ней отличит чужую сборку")
     print(f"индекс: {display_path(out_dir)}")
     print(f"дальше:  frameproof search \"<запрос>\" --out {display_path(out_dir)}")
     print(f"         frameproof frames --at 4:12 --out {display_path(out_dir)}")

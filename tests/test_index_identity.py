@@ -79,3 +79,39 @@ def test_без_метки_индекса_проверка_не_ломается
     """Старые разборы метки не несут, и ронять их нельзя."""
     from frameproof import verify as V
     assert V.extract_index_id("[18:38 / f0097] Просто утверждение.") is None
+
+
+def test_те_же_число_кадров_но_другие_моменты_дают_разный_отпечаток():
+    """Две сборки упёрлись в один потолок кадров: число то же, моменты другие.
+
+    Отпечаток из длительности и числа кадров их не различал, и разбор по одной
+    сборке молча проверялся против другой.
+    """
+    а = IX.build_fingerprint(duration=100.0, frame_count=3, source="v.mp4", times=[0, 10, 20])
+    б = IX.build_fingerprint(duration=100.0, frame_count=3, source="v.mp4", times=[0, 15, 30])
+    assert а != б
+
+
+def test_index_печатает_метку_сборки(tmp_path, capsys):
+    """Агент должен видеть метку, чтобы поставить её в шапку разбора."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("нужен ffmpeg")
+    clip = tmp_path / "v.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc=s=160x90:r=25:d=2", "-pix_fmt", "yuv420p", str(clip)], check=True)
+    from frameproof.__main__ import main
+
+    main(["index", str(clip), "--out", str(tmp_path / "i"), "--no-transcribe"])
+    out = capsys.readouterr().out
+    assert "Индекс: idx_" in out
+
+
+def test_skill_просит_ставить_метку_сборки():
+    with open(os.path.join(КОРЕНЬ, "frameproof", "assets", "skill", "SKILL.md"),
+              encoding="utf-8") as fh:
+        assert "Индекс: idx_" in fh.read()

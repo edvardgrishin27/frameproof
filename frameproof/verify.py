@@ -318,8 +318,8 @@ def audit(answer: str, index_dir: str) -> list[Claim]:
         if frame is not None and c.frame_id not in served:
             c.findings.append(Finding(
                 "NEVER_OPENED", WARN,
-                f"кадр {c.frame_id} существует, но ни разу не запрашивался — "
-                f"утверждение сделано, не посмотрев",
+                f"кадр {c.frame_id} существует, но команда frames его ни разу не "
+                f"выдавала — похоже, утверждение сделано не глядя",
             ))
 
         # Время не прочитано — сверять цитату с речью «рядом» не с чем.
