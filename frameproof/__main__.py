@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 
 from . import __version__
@@ -45,6 +46,14 @@ _чинить_вывод()
 
 #: На сколько секунд анализ может не дойти до конца ролика, прежде чем это обрыв.
 DECODE_SLACK = 5.0
+
+
+_ССЫЛКА = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|www\.)|^[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/", re.I)
+
+
+def _похоже_на_ссылку(target: str) -> bool:
+    """Ссылка со схемой, с www. или вида `домен.зона/путь`. Путь к файлу — нет."""
+    return bool(_ССЫЛКА.match(target.strip()))
 
 
 def _work_dir(target: str, explicit: str | None) -> str:
@@ -153,6 +162,11 @@ def cmd_index(args: argparse.Namespace) -> int:
             print(f"субтитры: {args.subs}, {n} {plural(n, 'реплика', 'реплики', 'реплик')}",
                   file=sys.stderr)
 
+    if not os.path.exists(args.target) and not _похоже_на_ссылку(args.target):
+        # Опечатка в пути раньше уезжала «качаться» и падала на «нужен yt-dlp».
+        print(f"файл не найден: {display_path(args.target)}. Если это ссылка — "
+              "дайте её целиком, с https://", file=sys.stderr)
+        return 2
     if not os.path.exists(args.target):
         from .fetch import fetch
 

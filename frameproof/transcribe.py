@@ -134,10 +134,60 @@ def _dedup_rolling(segs: list[Segment]) -> list[Segment]:
     return [Segment(i=i, t0=s.t0, t1=s.t1, text=s.text) for i, s in enumerate(out)]
 
 
+_XML_P = re.compile(r"<p\b([^>]*)>(.*?)</p>", re.S)
+_XML_ATTR = re.compile(r'(\w+)="([^"]*)"')
+
+
+def _xml_time(value: str) -> float | None:
+    """Время TTML: `00:00:01.500`, `1.5s`, `1500ms`."""
+    value = value.strip()
+    if value.endswith("ms"):
+        return float(value[:-2]) / 1000
+    if value.endswith("s"):
+        return float(value[:-1])
+    return _vtt_time(value if "." in value or "," in value else value + ".000")
+
+
+def parse_timedtext_xml(raw: bytes | str) -> list[Segment]:
+    """srv3 (`<p t="мс" d="мс">`) и TTML (`<p begin=".." end="..">`).
+
+    Регулярками, а не XML-парсером: чужой файл не должен разворачивать сущности.
+    """
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+    out: list[Segment] = []
+    for attrs, body in _XML_P.findall(text):
+        a = dict(_XML_ATTR.findall(attrs))
+        if "t" in a:
+            t0 = int(a["t"]) / 1000
+            t1 = t0 + int(a.get("d", "0")) / 1000
+        elif "begin" in a:
+            t0 = _xml_time(a["begin"])
+            t1 = _xml_time(a["end"]) if "end" in a else t0
+            if t0 is None:
+                continue
+        else:
+            continue
+        body = re.sub(r"<br\s*/?>", " ", body)
+        body = " ".join(html.unescape(re.sub(r"<[^>]+>", "", body)).split())
+        if body:
+            out.append(Segment(i=len(out), t0=t0, t1=t1 if t1 is not None else t0, text=body))
+    return out
+
+
+def parse_subtitles(raw: bytes) -> list[Segment]:
+    """Любой из форматов, которые отдают YouTube, Loom и люди: по содержимому."""
+    head = raw[:400].lstrip()
+    if b'"events"' in head or head.startswith(b"{"):
+        return parse_json3(raw)
+    if head.startswith(b"<"):
+        return parse_timedtext_xml(raw)
+    return parse_vtt(raw)
+
+
 def from_subtitles(path: str, *, auto: bool = False, lang: str | None = None) -> Transcript:
     with open(path, "rb") as fh:
         raw = fh.read()
-    segs = parse_json3(raw) if path.endswith(".json3") or raw.lstrip()[:1] == b"{" else parse_vtt(raw)
+    segs = parse_json3(raw) if path.endswith(".json3") else parse_subtitles(raw)
     return Transcript(segments=segs, source="subs-auto" if auto else "subs-manual", language=lang)
 
 

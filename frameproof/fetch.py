@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
 import shutil
 import sys
 import time
@@ -105,12 +106,30 @@ _ПАУЗЫ = (5, 15, 45)
 _КЛИЕНТЫ = (None, "android", "ios", "web_safari")
 
 
+_ЛИМИТ = re.compile(r"HTTP Error 429|Too Many Requests|\b(?:status|code)\W{0,3}429\b", re.I)
+_ЗАПРЕТ = re.compile(r"HTTP Error 403|\bForbidden\b|\b(?:status|code)\W{0,3}403\b", re.I)
+
+
+def _расширение_субтитров(raw: bytes) -> str:
+    """Формат субтитров по содержимому. srv3 и ttml раньше сохранялись как .vtt
+    и разбирались как VTT — в ноль реплик."""
+    head = raw[:400].lstrip()
+    if b'"events"' in head or head.startswith(b"{"):
+        return "json3"
+    if b"<timedtext" in head:
+        return "srv3"
+    if head.startswith(b"<"):
+        return "ttml"
+    return "vtt"
+
+
 def _это_лимит(exc: Exception) -> bool:
     """Похоже ли на 429. На других ошибках повторять нечего — они не пройдут."""
     if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
         return True
-    текст = str(exc)
-    return "429" in текст or "Too Many Requests" in текст
+    # По признаку ошибки, а не по цифре где угодно: «429» в id ролика или в числе
+    # байт давало ложные повторы с паузами до 260 секунд.
+    return bool(_ЛИМИТ.search(str(exc)))
 
 
 def _это_запрет(exc: Exception) -> bool:
@@ -121,8 +140,7 @@ def _это_запрет(exc: Exception) -> bool:
     """
     if isinstance(exc, urllib.error.HTTPError) and exc.code == 403:
         return True
-    текст = str(exc)
-    return "403" in текст or "Forbidden" in текст
+    return bool(_ЗАПРЕТ.search(str(exc)))
 
 
 def _с_повторами(сделать, что: str, *, спать=time.sleep):
@@ -510,6 +528,14 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
     from .kinescope import is_kinescope
 
     if is_kinescope(url):
+        from . import kinescope as ks
+
+        # Загрузка Kinescope идёт мимо yt-dlp, поэтому прокси ей отдаём сами.
+        # Раньше --proxy и переменные окружения до неё не доходили.
+        ks.set_proxy(_опции_прокси(proxy).get("proxy"))
+        if cookies_from_browser:
+            print("cookies браузера для Kinescope не нужны и не используются",
+                  file=sys.stderr)
         return _fetch_kinescope(
             url, work_dir, max_height=max_height, want_video=want_video,
             want_audio=want_audio, langs=langs,
@@ -538,7 +564,7 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
             print("  беру звук и расшифровываю сам", file=sys.stderr)
             raw = None
         if raw is not None:
-            ext = "json3" if b'"events"' in raw[:400] else "vtt"
+            ext = _расширение_субтитров(raw)
             sub_path = os.path.join(work_dir, f"subs.{sub_lang}.{ext}")
             with open(sub_path, "wb") as fh:
                 fh.write(raw)
@@ -546,7 +572,8 @@ def fetch(url: str, work_dir: str, *, max_height: int = 1080,
     # Видео тянем БЕЗ звука — так поток чётче при том же весе. Но если субтитров
     # не нашлось, расшифровывать будет нечего, поэтому аудиодорожку берём отдельно.
     audio_path = None
-    if not sub_path:
+    # want_audio=False (--no-transcribe) звук не качаем: раньше он качался всё равно.
+    if want_audio and not sub_path:
         audio_path = os.path.join(work_dir, "audio.m4a")
         if not os.path.exists(audio_path):
             def собрать_аудио(формат):

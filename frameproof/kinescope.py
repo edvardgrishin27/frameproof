@@ -172,9 +172,29 @@ def video_id(url: str) -> tuple[str, str]:
     return m.group(1), sign or signature(page)
 
 
+_PROXY: str | None = None
+
+
+def set_proxy(proxy: str | None) -> None:
+    """Прокси для загрузки Kinescope. urllib умеет только http(s)-прокси."""
+    global _PROXY
+    if proxy and proxy.lower().startswith("socks"):
+        raise ValueError(
+            f"Kinescope качается через urllib, а он не умеет socks-прокси ({proxy}). "
+            "Дайте http-прокси: --proxy http://host:port")
+    _PROXY = proxy or None
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    if _PROXY:
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": _PROXY, "https": _PROXY}))
+    return urllib.request.build_opener()
+
+
 def _get(url: str, *, referer: str = BASE, timeout: float = 30.0) -> bytes:
     req = urllib.request.Request(url, headers={"Referer": referer, "User-Agent": "frameproof"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _opener().open(req, timeout=timeout) as resp:
         return resp.read()
 
 
@@ -461,7 +481,7 @@ def _get_range(url: str, start: int, end: int, *, timeout: float = 60.0) -> byte
         "User-Agent": "frameproof",
         "Range": f"bytes={start}-{end}",
     })
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _opener().open(req, timeout=timeout) as resp:
         data = resp.read()
     # 200 вместо 206 означает, что диапазон проигнорировали и прислали файл целиком.
     if resp.status == 200 and start:
