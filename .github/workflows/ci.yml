@@ -1,15 +1,44 @@
 name: tests
+# Сквозные тесты (tests/test_real_video.py и др.) работают на настоящем ffmpeg и
+# без него пропускаются. Поэтому ffmpeg ставится на КАЖДОЙ системе: иначе CI
+# зелёный, а поломки вроде «звук длиннее картинки роняет index» он не видит.
 on: [push, pull_request]
+
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.10", "3.12", "3.13"]
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      - run: python -m pytest -q
+        env:
+          PYTHONUTF8: "1"
